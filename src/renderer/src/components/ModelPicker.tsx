@@ -11,10 +11,10 @@ const FOCUS_MODEL_EVENT = 'opencode-desktop:focus-model'
 
 /**
  * Providers that cost the user nothing extra per request surface first, in this order.
- * `nanogpt` leads: a flat-rate subscription is the most reliable of the group. Anything unknown
- * sorts alphabetically after them; anthropic always sinks to the bottom.
+ * NanoGPT leads because it is the flat-rate subscription path; Gemini follows it. Any
+ * read-only models discovered from an external OpenCode configuration sort alphabetically after them.
  */
-const FREE_FIRST = ['nanogpt', 'groq', 'google', 'openrouter', 'cerebras', 'mistral'] as const
+const FREE_FIRST = ['nanogpt', 'google'] as const
 const FREE_SET = new Set<string>(FREE_FIRST)
 
 function providerRank(id: string): number {
@@ -278,7 +278,7 @@ export function ModelPicker({ compact = false }: { compact?: boolean } = {}): JS
                 {providers.length === 0
                   ? 'No providers configured. Open Providers to connect one.'
                   : !showPaidModels && query.length === 0
-                    ? 'No free model available — add a NanoGPT / Google / Groq / Mistral key in Settings, or enable "Show paid models".'
+                    ? 'No subscription model available — add a NanoGPT or Gemini key in Settings, or enable "Show paid models".'
                     : `No model matches “${query}”.`}
               </div>
             )}

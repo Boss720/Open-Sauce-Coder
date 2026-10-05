@@ -32,3 +32,5 @@
   .live-screen__foot{flex-wrap:wrap;margin-top:12px}
   .live-screen__foot input{width:100%}
 }
+
+.live-screen__body--leroy{grid-template-columns:1fr}

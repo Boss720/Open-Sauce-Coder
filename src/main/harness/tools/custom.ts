@@ -21,10 +21,12 @@
  *
  * Invalid JSON or missing fields skip that file; loading never throws.
  */
-import { execFile } from 'node:child_process'
+import { execFile, type ChildProcess } from 'node:child_process'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
+import { buildChildEnv } from '../../env'
+import { killProcessTree } from './processKill'
 import type { ToolExecutor, ToolRegistry } from './registry'
 
 const execFileAsync = promisify(execFile)
@@ -133,11 +135,24 @@ function makeExecutor(tool: CustomToolFile): ToolExecutor {
         return { output: '', error: `Custom tool "${tool.name}" has an empty command.` }
       }
       const [cmd, ...rest] = argv
-      const { stdout, stderr } = await execFileAsync(cmd, rest, {
+      const promise = execFileAsync(cmd, rest, {
         cwd: context.directory,
         timeout: tool.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-        maxBuffer: MAX_BUFFER_BYTES
+        maxBuffer: MAX_BUFFER_BYTES,
+        env: buildChildEnv({}),
+        signal: context.abortSignal
       })
+      const child = (promise as { child?: ChildProcess }).child
+      if (child && context.abortSignal) {
+        const onAbort = () => killProcessTree(child)
+        if (context.abortSignal.aborted) {
+          onAbort()
+        } else {
+          context.abortSignal.addEventListener('abort', onAbort, { once: true })
+          promise.finally(() => context.abortSignal.removeEventListener('abort', onAbort)).catch(() => {})
+        }
+      }
+      const { stdout, stderr } = await promise
       let out = String(stdout) + (stderr ? `\n${String(stderr)}` : '')
       if (out.length > MAX_OUTPUT_CHARS) {
         out = out.slice(0, MAX_OUTPUT_CHARS) + '... (truncated)'

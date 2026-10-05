@@ -1,8 +1,19 @@
 import { useEffect, useState } from 'react'
 import type { JSX } from 'react'
 import { useStore } from '../lib/store'
-import { loadLedger, capsFor, rpdWindowStart, type Ledger, type ModelHealth } from '../lib/routing'
-import { FREE_MODEL_TIERS, FREE_PROVIDER_CAPS, OPAQUE_RPM_PROVIDERS } from '../lib/freeTier'
+import { currentRateUsage, loadLedger, type Ledger, type ModelHealth } from '../lib/routing'
+import { FREE_FALLBACK_PROVIDER_ORDER, FREE_MODEL_TIERS, FREE_PROVIDER_CAPS, isFreeModel, OPAQUE_RPM_PROVIDERS } from '../lib/freeTier'
+import { isAgentModel } from '../lib/models'
+import type { Model } from '../lib/types'
+
+const MAX_VISIBLE_MODELS = 60
+
+type RoutingRow = {
+  providerID: string
+  providerName: string
+  model: Model
+  tier: string | null
+}
 
 function formatSecondsAgo(then: number, now: number): string {
   const secs = Math.round((now - then) / 1000)
@@ -30,51 +41,55 @@ export function RoutingPanel(): JSX.Element {
   }, [])
 
   const linked = new Set(linkedProviderIDs)
-  const rows = FREE_MODEL_TIERS.filter((e) => linked.has(e.providerID))
+  const tiers = new Map(FREE_MODEL_TIERS.map((entry, index) => [`${entry.providerID}/${entry.modelID}`, { tier: entry.tier, index }]))
+  const providerOrder = new Map(FREE_FALLBACK_PROVIDER_ORDER.map((providerID, index) => [providerID, index]))
+  const allRows: RoutingRow[] = providers
+    .filter((provider) => linked.has(provider.id))
+    .flatMap((provider) => Object.values(provider.models ?? {})
+      .filter((model) => isAgentModel(model) && isFreeModel(provider.id, model.id, model.cost))
+      .map((model) => ({
+        providerID: provider.id,
+        providerName: provider.name,
+        model,
+        tier: tiers.get(`${provider.id}/${model.id}`)?.tier ?? null
+      })))
+    .sort((a, b) => {
+      const keyA = `${a.providerID}/${a.model.id}`
+      const keyB = `${b.providerID}/${b.model.id}`
+      const tierA = tiers.get(keyA)?.index ?? Number.MAX_SAFE_INTEGER
+      const tierB = tiers.get(keyB)?.index ?? Number.MAX_SAFE_INTEGER
+      return tierA - tierB ||
+        (providerOrder.get(a.providerID) ?? Number.MAX_SAFE_INTEGER) - (providerOrder.get(b.providerID) ?? Number.MAX_SAFE_INTEGER) ||
+        keyA.localeCompare(keyB)
+    })
+  const rows = allRows.slice(0, MAX_VISIBLE_MODELS)
 
   if (rows.length === 0) {
     return (
       <div style={{ fontSize: '11.5px', color: 'var(--fg-dim)', padding: '10px 0' }}>
-        No linked free-model providers. Add a Google, Groq, Mistral, Cohere, Cerebras, or OpenRouter key
-        under Provider Keys to see per-model health here.
+        No linked provider models active. Add an API key under Provider Keys
+        (Google, Groq, Mistral, Cerebras, OpenRouter, or NanoGPT) to see per-model health here.
       </div>
     )
   }
 
-  // Counted exactly the way the router counts, so this panel and the throttle can
-  // never disagree: the scope and the daily window both come from capsFor.
-  const usage = new Map<string, { used: number; cap: number | null }>()
-  for (const e of rows) {
-    const key = `${e.providerID}/${e.modelID}`
-    const resolved = capsFor(FREE_PROVIDER_CAPS, key)
-    const cap = resolved?.caps.rpd ?? null
-    const windowStart = rpdWindowStart(now, resolved?.caps.rpdWindow)
-    const sends =
-      resolved?.scope === 'provider'
-        ? Object.entries(ledger)
-            .filter(([k]) => k.startsWith(`${e.providerID}/`))
-            .flatMap(([, h]) => h.sends)
-        : (ledger[key]?.sends ?? [])
-    usage.set(key, { used: sends.filter((t) => t >= windowStart).length, cap })
-  }
-
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-      {rows.map((e) => {
-        const key = `${e.providerID}/${e.modelID}`
+      {rows.map((row) => {
+        const { providerID, model } = row
+        const key = `${providerID}/${model.id}`
         const health = ledger[key]
-        const provider = providers.find((p) => p.id === e.providerID)
-        const modelObj = provider?.models?.[e.modelID]
-        const label = provider ? `${provider.name} · ${modelObj?.name ?? e.modelID}` : key
+        const label = `${row.providerName} · ${model.name || model.id}`
         const total = (health?.success ?? 0) + (health?.error ?? 0)
         const successRatio = total > 0 ? Math.round((health!.success / total) * 100) : null
         const latency = health?.latencyEwma !== undefined && health?.latencyEwma !== null
           ? Math.round(health.latencyEwma)
           : null
         const cooldown = health ? cooldownRemaining(health, now) : 0
-        const modelUsage = usage.get(key) ?? { used: 0, cap: null }
-        const rpdTodayProvider = modelUsage.used
-        const rpdCap = modelUsage.cap ?? e.rpd ?? null
+        const usage = currentRateUsage(ledger, key, FREE_PROVIDER_CAPS, now)
+        const cap = usage?.caps
+        const rpd = usage?.requestsPerDay ?? 0
+        const rpm = usage?.requestsPerMinute ?? 0
 
         return (
           <div key={key} style={{
@@ -86,24 +101,29 @@ export function RoutingPanel(): JSX.Element {
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px' }}>
               <span style={{ fontWeight: 500 }}>
-                <span style={{
+                {row.tier && <span style={{
                   display: 'inline-block',
                   padding: '1px 5px',
                   fontSize: '10px',
                   background: 'var(--border)',
                   borderRadius: '3px',
                   marginRight: '6px',
-                }}>{e.tier}</span>
+                }}>{row.tier}</span>}
                 {label}
               </span>
               <span style={{ color: 'var(--fg-dim)', fontSize: '10.5px' }}>
-                {rpdCap ? `${rpdTodayProvider}/${rpdCap}` : `${rpdTodayProvider} today`}
+                {cap?.rpm === undefined || OPAQUE_RPM_PROVIDERS.has(providerID)
+                  ? `RPM ${rpm} local · unpublished`
+                  : `RPM ${rpm}/${cap.rpm} local`}
                 {' · '}
-                {OPAQUE_RPM_PROVIDERS.has(e.providerID) ? 'rpm unpublished' : `${e.rpm} rpm`}
+                {cap?.rpd === undefined ? `RPD ${rpd} local · no cap` : `RPD ${rpd}/${cap.rpd} local`}
               </span>
             </div>
 
             <div style={{ marginTop: '3px', display: 'flex', gap: '10px', color: 'var(--fg-dim)', fontSize: '10.5px' }}>
+              {cap?.burst && <span>burst {usage?.burstRequests ?? 0}/{cap.burst.count} per {cap.burst.windowMs / 1000}s</span>}
+              {cap?.tpm !== undefined && <span>TPM {cap.tpmTokens === 'input' ? 'input ' : ''}{usage?.tokensPerMinute ?? 0}/{cap.tpm} local</span>}
+              {cap?.rpdWindow === 'day-pt' && <span>resets midnight PT</span>}
               <span title="Successful requests">✓ {health?.success ?? 0}</span>
               <span title="Failed requests">✗ {health?.error ?? 0}</span>
               {successRatio !== null && <span>{successRatio}% ok</span>}
@@ -121,7 +141,8 @@ export function RoutingPanel(): JSX.Element {
         )
       })}
       <p style={{ fontSize: '10.5px', color: 'var(--fg-dim)', marginTop: '4px' }}>
-        RPD counters aggregate all models per provider (auto-refreshes every 2s).
+        Local desktop ledger only; other apps using the same provider key are not counted. Provider limits vary by account and project.
+        {allRows.length > rows.length ? ` Showing ${rows.length} of ${allRows.length} eligible models.` : ''}
       </p>
     </div>
   )

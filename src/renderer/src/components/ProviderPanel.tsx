@@ -6,44 +6,30 @@ import { useStore } from '../lib/store'
 /** Shape returned by `window.api.keys.list()` (owned by the keys/preload stream). */
 type KeyRow = { providerID: string; envVar: string; maskedTail: string | null }
 
-/** The one command that connects a provider via OpenCode's own credential store. */
-const AUTH_COMMAND = 'opencode auth login'
-
-/** Providers with a usable free tier, surfaced first everywhere in the UI. */
-const FREE_TIER = new Set(['groq', 'google', 'openrouter', 'cerebras', 'mistral'])
+/** All BYOK-supported first-party and third-party experiences. */
+const BYOK_PROVIDER_IDS = new Set([
+  'nanogpt',
+  'google',
+  'groq',
+  'mistral',
+  'openrouter',
+  'moonshot',
+  'xai',
+  'cerebras'
+])
 
 /** Provider id whose models come from a flat-rate subscription catalogue fetched at runtime. */
 const NANOGPT = 'nanogpt'
 
 const DOCS: Record<string, string> = {
   nanogpt: 'https://docs.nano-gpt.com/',
-  groq: 'https://console.groq.com/docs/quickstart',
   google: 'https://ai.google.dev/gemini-api/docs',
-  'google-vertex': 'https://cloud.google.com/vertex-ai/generative-ai/docs',
-  openrouter: 'https://openrouter.ai/docs/quickstart',
-  cerebras: 'https://inference-docs.cerebras.ai/',
+  groq: 'https://console.groq.com/docs/quickstart',
   mistral: 'https://docs.mistral.ai/',
-  openai: 'https://platform.openai.com/docs/overview',
-  anthropic: 'https://docs.claude.com/',
-  azure: 'https://learn.microsoft.com/azure/ai-services/openai/',
-  'amazon-bedrock': 'https://docs.aws.amazon.com/bedrock/',
-  deepseek: 'https://api-docs.deepseek.com/',
-  moonshotai: 'https://platform.moonshot.ai/docs',
+  openrouter: 'https://openrouter.ai/docs',
+  moonshot: 'https://platform.moonshot.cn/docs',
   xai: 'https://docs.x.ai/',
-  'github-copilot': 'https://docs.github.com/copilot',
-  'github-models': 'https://docs.github.com/github-models',
-  ollama: 'https://docs.ollama.com/',
-  'llama-cpp': 'https://github.com/ggml-org/llama.cpp',
-  togetherai: 'https://docs.together.ai/',
-  together: 'https://docs.together.ai/',
-  fireworks: 'https://docs.fireworks.ai/',
-  'fireworks-ai': 'https://docs.fireworks.ai/',
-  perplexity: 'https://docs.perplexity.ai/',
-  huggingface: 'https://huggingface.co/docs/inference-providers',
-  cohere: 'https://docs.cohere.com/',
-  nvidia: 'https://docs.api.nvidia.com/',
-  'opencode-zen': 'https://opencode.ai/docs/zen/',
-  opencode: 'https://opencode.ai/docs/'
+  cerebras: 'https://inference-docs.cerebras.ai/'
 }
 
 const FALLBACK_DOCS = 'https://opencode.ai/docs/providers/'
@@ -54,31 +40,22 @@ const BUILTIN_PROVIDERS: { id: string; name: string }[] = [
   // subscription catalogue, which cannot be fetched until a key exists — so on a fresh install the
   // provider is absent from `providers` and this floor entry is the only way to enter the key.
   { id: NANOGPT, name: 'NanoGPT (subscription)' },
-  { id: 'google', name: 'Google' },
+  { id: 'google', name: 'Gemini (including Gemini Live)' },
   { id: 'groq', name: 'Groq' },
-  { id: 'cerebras', name: 'Cerebras' },
-  { id: 'mistral', name: 'Mistral' },
-  { id: 'cohere', name: 'Cohere' },
+  { id: 'mistral', name: 'Mistral AI' },
   { id: 'openrouter', name: 'OpenRouter' },
-  { id: 'huggingface', name: 'Hugging Face' },
-  { id: 'together', name: 'Together AI' },
-  { id: 'fireworks', name: 'Fireworks AI' },
-  { id: 'nvidia', name: 'NVIDIA' },
-  { id: 'deepseek', name: 'DeepSeek' },
-  { id: 'moonshotai', name: 'Moonshot Kimi' },
-  { id: 'xai', name: 'xAI' },
-  { id: 'openai', name: 'OpenAI' },
-  { id: 'anthropic', name: 'Anthropic' }
+  { id: 'moonshot', name: 'Moonshot (Kimi)' },
+  { id: 'xai', name: 'xAI (Grok)' },
+  { id: 'cerebras', name: 'Cerebras' }
 ]
 
 /** Dispatched by SettingsPanel's "Manage provider keys…" entry point. */
 const OPEN_PROVIDERS_EVENT = 'providers:open'
 
 function rankID(id: string): number {
-  if (id === NANOGPT) return -1
-  if (FREE_TIER.has(id)) return 0
-  if (id === 'anthropic') return 2
-  return 1
+  if (id === NANOGPT) return -2
+  if (id === 'google') return -1
+  return 0
 }
 
 /** "3 minutes ago" style relative label for the catalogue's last-fetch timestamp. */
@@ -180,57 +157,6 @@ function isConnected(providerID: string, linkedProviderIDs: string[]): boolean {
   return linkedProviderIDs.includes(providerID)
 }
 
-async function copyText(text: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-      await navigator.clipboard.writeText(text)
-      return true
-    }
-  } catch {
-    /* fall through to the legacy path */
-  }
-  try {
-    const ta = document.createElement('textarea')
-    ta.value = text
-    ta.setAttribute('readonly', '')
-    ta.style.position = 'fixed'
-    ta.style.top = '-1000px'
-    ta.style.opacity = '0'
-    document.body.appendChild(ta)
-    ta.select()
-    const ok = document.execCommand('copy')
-    document.body.removeChild(ta)
-    return ok
-  } catch {
-    return false
-  }
-}
-
-function CopyCommand({ text }: { text: string }): JSX.Element {
-  const [copied, setCopied] = useState(false)
-
-  useEffect(() => {
-    if (!copied) return
-    const t = window.setTimeout(() => setCopied(false), 1400)
-    return () => window.clearTimeout(t)
-  }, [copied])
-
-  return (
-    <div className="providers__code">
-      <code>{text}</code>
-      <button
-        type="button"
-        className="providers__copy"
-        onClick={() => {
-          void copyText(text).then((ok) => setCopied(ok))
-        }}
-      >
-        {copied ? 'Copied' : 'Copy'}
-      </button>
-    </div>
-  )
-}
-
 type TestOutcome = { ok: boolean; status?: number; detail?: string }
 
 function ProviderKeyCard({
@@ -267,7 +193,6 @@ function ProviderKeyCard({
   onRemove: () => void
   onTest: () => void
 }): JSX.Element {
-  const free = FREE_TIER.has(id)
   const subscription = id === NANOGPT
   const url = DOCS[id] ?? FALLBACK_DOCS
   const live = isConnected(id, linkedProviderIDs)
@@ -286,7 +211,6 @@ function ProviderKeyCard({
           {name} <span className="providers__ext">↗</span>
         </button>
         <span className="providers__tags">
-          {free && <span className="providers__tag providers__tag--free">free tier</span>}
           {subscription && <span className="providers__tag providers__tag--free">subscription</span>}
           {live && <span className="providers__tag providers__tag--ok">connected</span>}
           {!live && row && (
@@ -394,8 +318,6 @@ export function ProviderPanel({ open, onClose }: { open: boolean; onClose: () =>
   const [loadingRows, setLoadingRows] = useState(false)
   const [needsRestart, setNeedsRestart] = useState(false)
   const [restarting, setRestarting] = useState(false)
-  const [advancedOpen, setAdvancedOpen] = useState(false)
-
   const [keyInputs, setKeyInputs] = useState<Record<string, string>>({})
   const [savingID, setSavingID] = useState<string | null>(null)
   const [testingID, setTestingID] = useState<string | null>(null)
@@ -421,6 +343,7 @@ export function ProviderPanel({ open, onClose }: { open: boolean; onClose: () =>
       map.set(b.id, { id: b.id, name: b.name, env: [] })
     }
     for (const p of providers) {
+      if (!BYOK_PROVIDER_IDS.has(p.id)) continue
       map.set(p.id, { id: p.id, name: p.name, env: p.env, storeProvider: p })
     }
     return [...map.values()].sort((a, b) => {
@@ -590,8 +513,8 @@ export function ProviderPanel({ open, onClose }: { open: boolean; onClose: () =>
           )}
 
           <p className="providers__note providers__key-intro">
-            Add a key for any provider below to use it right away — no terminal required. Keys are
-            saved by OpenCode; this panel only ever shows the masked tail back.
+            Add API keys for NanoGPT, Gemini, Groq, Mistral, OpenRouter, Moonshot, xAI, or Cerebras.
+            Keys are encrypted by the app and this panel only ever displays masked tails.
           </p>
 
           <section>
@@ -632,25 +555,6 @@ export function ProviderPanel({ open, onClose }: { open: boolean; onClose: () =>
             </div>
           </section>
 
-          <div className="providers__key-advanced">
-            <button
-              type="button"
-              className="providers__key-advanced-toggle"
-              onClick={() => setAdvancedOpen((v) => !v)}
-              aria-expanded={advancedOpen}
-            >
-              {advancedOpen ? '▾' : '▸'} Advanced: authenticate via terminal instead
-            </button>
-            {advancedOpen && (
-              <div className="providers__key-advanced-body">
-                <p className="providers__note">
-                  Prefer OpenCode's own credential store? Run this in a terminal and pick a provider
-                  from the prompt:
-                </p>
-                <CopyCommand text={AUTH_COMMAND} />
-              </div>
-            )}
-          </div>
         </div>
       </div>
     </div>

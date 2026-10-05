@@ -24,6 +24,7 @@ import {
   removePart
 } from '../collections'
 import { api, errText } from './api'
+import { harnessPromptFields } from './sessionSlice'
 import type { AppState, SetState, GetState } from './types'
 import type { Message, MessageWithParts, OcEvent, Part, Session } from '../types'
 
@@ -162,8 +163,28 @@ export function createSubagentSlice(set: SetState, get: GetState): SubagentSlice
         subagentBusy: { ...state.subagentBusy, [sessionID]: true },
         subagentError: { ...state.subagentError, [sessionID]: null }
       }))
+      const childSession = get().sessions?.find((s) => s.id === sessionID)
+      const parentID = childSession?.parentID
+      if (parentID && get().sessionReadOnly?.[parentID]) {
+        get().setSessionReadOnly?.(sessionID, true)
+        set((state) => ({ sessionReadOnly: { ...state.sessionReadOnly, [sessionID]: true } }))
+      }
+      if (parentID && get().sessionAgents?.[parentID]) {
+        const agent = get().sessionAgents[parentID]
+        get().setSessionAgent?.(sessionID, agent)
+        set((state) => ({ sessionAgents: { ...state.sessionAgents, [sessionID]: agent } }))
+      }
+      const policy = harnessPromptFields(get, sessionID)
+
       try {
-        await api().prompt({ directory, sessionID, providerID, modelID, text: trimmed })
+        await api().prompt({
+          directory,
+          sessionID,
+          providerID,
+          modelID,
+          text: trimmed,
+          ...policy
+        })
       } catch (e) {
         set((state) => ({
           subagentBusy: { ...state.subagentBusy, [sessionID]: false },
@@ -214,13 +235,25 @@ export function createSubagentSlice(set: SetState, get: GetState): SubagentSlice
       }))
       await get().openSubagentTab(child.id)
 
+      if (get().sessionReadOnly?.[activeSessionID]) {
+        get().setSessionReadOnly?.(child.id, true)
+        set((state) => ({ sessionReadOnly: { ...state.sessionReadOnly, [child.id]: true } }))
+      }
+      if (get().sessionAgents?.[activeSessionID]) {
+        const agent = get().sessionAgents[activeSessionID]
+        get().setSessionAgent?.(child.id, agent)
+        set((state) => ({ sessionAgents: { ...state.sessionAgents, [child.id]: agent } }))
+      }
+      const policy = harnessPromptFields(get, child.id)
+
       try {
         await api().prompt({
           directory,
           sessionID: child.id,
           providerID,
           modelID,
-          text: trimmed
+          text: trimmed,
+          ...policy
         })
       } catch (e) {
         set((state) => ({

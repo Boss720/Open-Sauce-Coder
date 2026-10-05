@@ -4,7 +4,7 @@
  * Pure module, no store import, no React.
  */
 
-import { freeCodingQuality, OPAQUE_RPM_PROVIDERS } from './freeTier'
+import { freeCodingQuality, OPAQUE_RPM_PROVIDERS, isSubscriptionProvider, isFreeModel } from './freeTier'
 // Type-only: erased at compile time, so this module stays free of the localStorage in prefs.ts.
 import type { RoutingMode } from './prefs'
 
@@ -47,7 +47,7 @@ export type ModelHealth = {
   error: number
   last429: number | null
   latencyEwma: number | null
-  sends: number[] // epoch-ms timestamps, pruned to last 24h
+  sends: number[] // epoch-ms timestamps; retain 48h for 25h Pacific quota days
   /**
    * `[epochMs, totalTokens]` per completed request, pruned to the last hour.
    * Separate from `sends` because a send carries no token count until it finishes,
@@ -55,6 +55,8 @@ export type ModelHealth = {
    * defensively.
    */
   tokenEvents?: Array<[number, number]>
+  /** `[epochMs, inputTokens]` for provider limits defined on input tokens only. */
+  inputTokenEvents?: Array<[number, number]>
 }
 
 export type Ledger = Record<ModelKey, ModelHealth>
@@ -80,6 +82,8 @@ export type ProviderCaps = {
    * which the renderer cannot do.
    */
   tpm?: number
+  /** Google reports input TPM; other entries default to total observed tokens. */
+  tpmTokens?: 'input' | 'total'
   rpdWindow?: RpdWindow
   burst?: { count: number; windowMs: number }
 }
@@ -94,6 +98,7 @@ export type ModelCapsMap = Record<string, ProviderCaps>
 export const LEDGER_STORAGE_KEY = 'opencode-desktop:routing-ledger'
 
 const DAY_MS = 86400000
+const SEND_EVENT_RETENTION_MS = 48 * 3600_000
 
 const PT_ZONE = 'America/Los_Angeles'
 
@@ -193,7 +198,8 @@ export function rpdWindowEnd(now: number, window: RpdWindow | undefined, oldestS
     }
   }
   // Rolling: the allowance frees up one slot at a time as old sends age out.
-  return (oldestSend ?? now) + DAY_MS
+  // `underRateCaps` includes a send exactly on the rolling-window boundary.
+  return (oldestSend ?? now) + DAY_MS + 1
 }
 
 /**
@@ -275,7 +281,7 @@ export function record429(
  */
 export function reserveAttempt(ledger: Ledger, key: ModelKey, now: number): Ledger {
   const existing = ledger[key] ?? { ...DEFAULT_HEALTH }
-  const sends = existing.sends.filter((t) => now - t <= 86400000)
+  const sends = existing.sends.filter((t) => t <= now && now - t <= SEND_EVENT_RETENTION_MS)
   sends.push(now)
 
   return {
@@ -391,25 +397,28 @@ export function underRateCaps(
   // exponential backoff, so the ceiling is discovered rather than assumed.
   const enforceRpm = cap.rpm !== undefined && !OPAQUE_RPM_PROVIDERS.has(parsed.providerID)
   if (enforceRpm) {
-    const rpmSends = sends.filter((t) => now - t <= 60000).length
+    const rpmSends = sends.filter((t) => t <= now && now - t <= 60000).length
     if (rpmSends >= (cap.rpm as number)) return false
   }
 
   if (cap.burst !== undefined) {
-    const burstSends = sends.filter((t) => now - t <= cap.burst!.windowMs).length
+    const burstSends = sends.filter((t) => t <= now && now - t <= cap.burst!.windowMs).length
     if (burstSends >= cap.burst.count) return false
   }
 
   if (cap.rpd !== undefined) {
     const windowStart = rpdWindowStart(now, cap.rpdWindow)
-    const rpdSends = sends.filter((t) => t >= windowStart).length
+    const rpdSends = sends.filter((t) => t >= windowStart && t <= now).length
     if (rpdSends >= cap.rpd) return false
   }
 
   // TPM last, because it is the one most likely to be the real blocker on Google
   // Flash and the one the router previously ignored entirely.
   if (cap.tpm !== undefined) {
-    if (tokensInLastMinute(ledger, key, resolved.scope, now) >= cap.tpm) return false
+    const used = cap.tpmTokens === 'input'
+      ? inputTokensInLastMinute(ledger, key, resolved.scope, now)
+      : tokensInLastMinute(ledger, key, resolved.scope, now)
+    if (used >= cap.tpm) return false
   }
 
   return true
@@ -425,9 +434,18 @@ const TOKEN_EVENT_RETENTION_MS = 3600_000
 export function recordTokens(ledger: Ledger, key: ModelKey, tokens: number, now: number): Ledger {
   if (!Number.isFinite(tokens) || tokens <= 0) return ledger
   const existing = ledger[key] ?? { ...DEFAULT_HEALTH }
-  const kept = (existing.tokenEvents ?? []).filter(([t]) => now - t <= TOKEN_EVENT_RETENTION_MS)
+  const kept = (existing.tokenEvents ?? []).filter(([t]) => t <= now && now - t <= TOKEN_EVENT_RETENTION_MS)
   kept.push([now, Math.round(tokens)])
   return { ...ledger, [key]: { ...existing, tokenEvents: kept } }
+}
+
+/** Record input tokens separately for providers whose TPM counts prompt tokens only. */
+export function recordInputTokens(ledger: Ledger, key: ModelKey, tokens: number, now: number): Ledger {
+  if (!Number.isFinite(tokens) || tokens <= 0) return ledger
+  const existing = ledger[key] ?? { ...DEFAULT_HEALTH }
+  const kept = (existing.inputTokenEvents ?? []).filter(([time]) => time <= now && now - time <= TOKEN_EVENT_RETENTION_MS)
+  kept.push([now, Math.round(tokens)])
+  return { ...ledger, [key]: { ...existing, inputTokenEvents: kept } }
 }
 
 /** Token events counted against a cap, per its scope. */
@@ -451,9 +469,28 @@ function tokenEventsInScope(
 function tokensInLastMinute(ledger: Ledger, key: ModelKey, scope: 'model' | 'provider', now: number): number {
   let total = 0
   for (const [t, tokens] of tokenEventsInScope(ledger, key, scope)) {
-    if (now - t <= 60000) total += tokens
+    if (t <= now && now - t <= 60000) total += tokens
   }
   return total
+}
+
+/** Input token events counted against a cap, per its scope. */
+function inputTokenEventsInScope(
+  ledger: Ledger,
+  key: ModelKey,
+  scope: 'model' | 'provider'
+): Array<[number, number]> {
+  const providerID = parseModelKey(key)?.providerID
+  if (scope === 'model') return ledger[key]?.inputTokenEvents ?? []
+  if (providerID === undefined) return []
+  return Object.entries(ledger)
+    .filter(([modelKey]) => parseModelKey(modelKey)?.providerID === providerID)
+    .flatMap(([, health]) => health.inputTokenEvents ?? [])
+}
+
+function inputTokensInLastMinute(ledger: Ledger, key: ModelKey, scope: 'model' | 'provider', now: number): number {
+  return inputTokenEventsInScope(ledger, key, scope)
+    .reduce((sum, [time, tokens]) => sum + (time <= now && now - time <= 60000 ? tokens : 0), 0)
 }
 
 /** Send timestamps counted against a cap, per its scope. */
@@ -464,6 +501,43 @@ function sendsInScope(ledger: Ledger, key: ModelKey, scope: 'model' | 'provider'
   return Object.entries(ledger)
     .filter(([modelKey]) => parseModelKey(modelKey)?.providerID === providerID)
     .flatMap(([, health]) => health.sends)
+}
+
+export type CurrentRateUsage = {
+  caps: ProviderCaps
+  scope: 'model' | 'provider'
+  requestsPerMinute: number
+  requestsPerDay: number
+  burstRequests: number
+  tokensPerMinute: number
+}
+
+/** Local ledger usage and limits, resolved with the same scope as the throttle. */
+export function currentRateUsage(
+  ledger: Ledger,
+  key: ModelKey,
+  caps: ModelCapsMap,
+  now: number
+): CurrentRateUsage | null {
+  const resolved = capsFor(caps, key)
+  if (!resolved) return null
+  const sends = sendsInScope(ledger, key, resolved.scope)
+  const cap = resolved.caps
+  const windowStart = rpdWindowStart(now, cap.rpdWindow)
+  const tokensPerMinute = cap.tpmTokens === 'input'
+    ? inputTokensInLastMinute(ledger, key, resolved.scope, now)
+    : tokensInLastMinute(ledger, key, resolved.scope, now)
+
+  return {
+    caps: cap,
+    scope: resolved.scope,
+    requestsPerMinute: sends.filter((t) => t <= now && now - t <= 60000).length,
+    requestsPerDay: sends.filter((t) => t >= windowStart && t <= now).length,
+    burstRequests: cap.burst
+      ? sends.filter((t) => t <= now && now - t <= cap.burst!.windowMs).length
+      : 0,
+    tokensPerMinute
+  }
 }
 
 /**
@@ -481,16 +555,184 @@ export function underModelRateCaps(ledger: Ledger, key: ModelKey, caps: ModelCap
   if (!health || health.sends.length === 0) return true
 
   if (cap.rpm !== undefined) {
-    const rpmSends = health.sends.filter((t) => now - t <= 60000).length
+    const rpmSends = health.sends.filter((t) => t <= now && now - t <= 60000).length
     if (rpmSends >= cap.rpm) return false
   }
 
   if (cap.rpd !== undefined) {
-    const rpdSends = health.sends.filter((t) => now - t <= 86400000).length
+    const rpdSends = health.sends.filter((t) => t <= now && now - t <= 86400000).length
     if (rpdSends >= cap.rpd) return false
   }
 
   return true
+}
+
+export type CandidateDetail = {
+  key: ModelKey
+  score: number
+  quality: number
+  latency: number | null
+  costTier: 'free' | 'subscription' | 'paid'
+  rejectedReason?: string
+}
+
+export type ModelSelectionExplanation = {
+  selected: ModelKey | null
+  reason: string
+  candidates: CandidateDetail[]
+}
+
+/** Classify a model key into free, subscription, or paid tier. */
+export function getCostTier(key: ModelKey): 'free' | 'subscription' | 'paid' {
+  const parsed = parseModelKey(key)
+  if (!parsed) return 'paid'
+  if (isSubscriptionProvider(parsed.providerID)) return 'subscription'
+  if (isFreeModel(parsed.providerID, parsed.modelID)) return 'free'
+  return 'paid'
+}
+
+function evaluateCandidate(
+  key: ModelKey,
+  ledger: Ledger,
+  caps: ModelCapsMap,
+  now: number,
+  opts: { available: ReadonlySet<ModelKey> },
+  isAuthenticatedCandidate: (key: ModelKey) => boolean
+): CandidateDetail {
+  const quality = codingQuality(key)
+  const costTier = getCostTier(key)
+  const health = ledger[key]
+  const latency = health?.latencyEwma ?? null
+
+  if (!opts.available.has(key)) {
+    return { key, score: -1, quality, latency, costTier, rejectedReason: 'Not available on server' }
+  }
+
+  if (!isAuthenticatedCandidate(key)) {
+    return { key, score: -1, quality, latency, costTier, rejectedReason: 'Provider not authenticated' }
+  }
+
+  const isOutofCooldown = !health || health.cooldownUntil <= now
+  if (!isOutofCooldown) {
+    const remainingSec = Math.ceil((health.cooldownUntil - now) / 1000)
+    return {
+      key,
+      score: -1,
+      quality,
+      latency,
+      costTier,
+      rejectedReason: `Cooldown active (${remainingSec}s left)`
+    }
+  }
+
+  if (!underRateCaps(ledger, key, caps, now)) {
+    return { key, score: -1, quality, latency, costTier, rejectedReason: 'Rate limit cap reached' }
+  }
+
+  if (health) {
+    const total = health.success + health.error
+    if (total >= 5 && health.success / total < 0.2) {
+      const pct = Math.round((health.success / total) * 100)
+      return {
+        key,
+        score: -1,
+        quality,
+        latency,
+        costTier,
+        rejectedReason: `High failure rate (${pct}% success over ${total} runs)`
+      }
+    }
+  }
+
+  const h = health ?? DEFAULT_HEALTH
+  const total = h.success + h.error
+  const successRatio = total > 0 ? h.success / total : 1.0
+  const latencyPenalty = h.latencyEwma !== null ? Math.min(1.0, h.latencyEwma / 5000) : 0.0
+  const recent429Penalty = h.last429 !== null ? Math.max(0, 1 - (now - h.last429) / 3600000) : 0.0
+
+  const healthScore = successRatio - latencyPenalty * 0.3 - recent429Penalty * 0.5
+  const qualityNorm = quality / 6
+  const score = healthScore + qualityNorm * 0.12
+
+  return { key, score, quality, latency, costTier }
+}
+
+/**
+ * Score and select the optimal model from a pool based on health ledger statistics,
+ * returning full explanation and candidate evaluation details.
+ */
+export function selectModelDetailed(
+  pool: ModelKey[] | null,
+  ledger: Ledger,
+  caps: ModelCapsMap,
+  now: number,
+  opts: {
+    sticky: boolean
+    current: ModelKey | null
+    available: ReadonlySet<ModelKey>
+    authenticatedProviders: ReadonlySet<string>
+  }
+): ModelSelectionExplanation {
+  const candidatePool = pool && pool.length > 0 ? pool : Array.from(opts.available)
+  const candidateDetails: CandidateDetail[] = []
+
+  const isAuthenticatedCandidate = (key: ModelKey): boolean => {
+    const parsed = parseModelKey(key)
+    return Boolean(parsed && opts.authenticatedProviders.has(parsed.providerID))
+  }
+
+  // Sticky model preference: if sticky mode is enabled and current model is healthy, stay put.
+  if (opts.sticky && opts.current && opts.available.has(opts.current) && isAuthenticatedCandidate(opts.current)) {
+    const health = ledger[opts.current]
+    const isOutofCooldown = !health || health.cooldownUntil <= now
+    if (isOutofCooldown && underRateCaps(ledger, opts.current, caps, now)) {
+      for (const key of candidatePool) {
+        candidateDetails.push(evaluateCandidate(key, ledger, caps, now, opts, isAuthenticatedCandidate))
+      }
+      if (!candidatePool.includes(opts.current)) {
+        candidateDetails.unshift(evaluateCandidate(opts.current, ledger, caps, now, opts, isAuthenticatedCandidate))
+      }
+      return {
+        selected: opts.current,
+        reason: 'Preserved current model (sticky selection enabled and model is healthy)',
+        candidates: candidateDetails
+      }
+    }
+  }
+
+  for (const key of candidatePool) {
+    candidateDetails.push(evaluateCandidate(key, ledger, caps, now, opts, isAuthenticatedCandidate))
+  }
+
+  const healthyCandidates = candidateDetails
+    .map((c, poolIndex) => ({ ...c, poolIndex }))
+    .filter((c) => !c.rejectedReason && c.score >= 0)
+
+  if (healthyCandidates.length === 0) {
+    return {
+      selected: null,
+      reason: 'No healthy candidates available; all candidates are cooling down, rate-limited, or unauthenticated',
+      candidates: candidateDetails
+    }
+  }
+
+  healthyCandidates.sort((a, b) => {
+    if (Math.abs(a.score - b.score) > 1e-6) {
+      return b.score - a.score // highest score first
+    }
+    if (a.quality !== b.quality) return b.quality - a.quality
+    return a.key < b.key ? -1 : a.key > b.key ? 1 : a.poolIndex - b.poolIndex
+  })
+
+  const winner = healthyCandidates[0]
+  const latencyStr = winner.latency !== null ? `${Math.round(winner.latency)}ms latency` : 'no latency history'
+  const reason = `Selected ${winner.key}: score ${(winner.score * 100).toFixed(0)}%, coding quality ${winner.quality}/6, ${latencyStr} (${winner.costTier} tier)`
+
+  return {
+    selected: winner.key,
+    reason,
+    candidates: candidateDetails
+  }
 }
 
 /**
@@ -503,64 +745,7 @@ export function selectModel(
   now: number,
   opts: { sticky: boolean; current: ModelKey | null; available: ReadonlySet<ModelKey>; authenticatedProviders: ReadonlySet<string> }
 ): ModelKey | null {
-  // A configured pool is a hard user constraint. Without one, only consider
-  // server-available models from providers that are actually authenticated.
-  const candidatePool = pool && pool.length > 0 ? pool : Array.from(opts.available)
-  const isAuthenticatedCandidate = (key: ModelKey): boolean => {
-    const parsed = parseModelKey(key)
-    return Boolean(parsed && opts.authenticatedProviders.has(parsed.providerID))
-  }
-
-  // Sticky model preference: if sticky mode is enabled and current model is healthy, stay put.
-  if (opts.sticky && opts.current && opts.available.has(opts.current) && isAuthenticatedCandidate(opts.current)) {
-    const health = ledger[opts.current]
-    const isOutofCooldown = !health || health.cooldownUntil <= now
-    if (isOutofCooldown && underRateCaps(ledger, opts.current, caps, now)) {
-      return opts.current
-    }
-  }
-
-  // Filter healthy candidates available on server
-  const healthyCandidates = candidatePool.filter((key) => {
-    if (!opts.available.has(key) || !isAuthenticatedCandidate(key)) return false
-    const health = ledger[key]
-    const isOutofCooldown = !health || health.cooldownUntil <= now
-    if (!isOutofCooldown || !underRateCaps(ledger, key, caps, now)) return false
-    // R11: hard floor — skip models with enough data and terrible success ratio
-    if (health) {
-      const total = health.success + health.error
-      if (total >= 5 && health.success / total < 0.2) return false
-    }
-    return true
-  })
-
-  if (healthyCandidates.length === 0) return null
-
-  const scored = healthyCandidates.map((key, poolIndex) => {
-    const h = ledger[key] ?? DEFAULT_HEALTH
-    const total = h.success + h.error
-    const successRatio = total > 0 ? h.success / total : 1.0
-    const latencyPenalty = h.latencyEwma !== null ? Math.min(1.0, h.latencyEwma / 5000) : 0.0
-    const recent429Penalty = h.last429 !== null ? Math.max(0, 1 - (now - h.last429) / 3600000) : 0.0
-
-    const healthScore = successRatio - latencyPenalty * 0.3 - recent429Penalty * 0.5
-    // Normalize quality to [0, 0.12] so it cannot outweigh health (R11 fix)
-    const qualityNorm = codingQuality(key) / 6
-    const score = healthScore + qualityNorm * 0.12
-    const deterministicRank = codingQuality(key)
-
-    return { key, score, deterministicRank, poolIndex }
-  })
-
-  scored.sort((a, b) => {
-    if (Math.abs(a.score - b.score) > 1e-6) {
-      return b.score - a.score // highest score first
-    }
-    if (a.deterministicRank !== b.deterministicRank) return b.deterministicRank - a.deterministicRank
-    return a.key < b.key ? -1 : a.key > b.key ? 1 : a.poolIndex - b.poolIndex
-  })
-
-  return scored[0].key
+  return selectModelDetailed(pool, ledger, caps, now, opts).selected
 }
 
 /**
@@ -584,40 +769,64 @@ export function nextAvailableAt(
     const health = ledger[key]
     let at = health?.cooldownUntil !== undefined && health.cooldownUntil > now ? health.cooldownUntil : now
     const resolved = capsFor(caps, key)
+    let canRecover = true
 
     if (resolved) {
       const sends = sendsInScope(ledger, key, resolved.scope)
       const cap = resolved.caps
+      const providerID = parseModelKey(key)?.providerID
+
+      // Zero limits never recover with time. Ignore this candidate instead of
+      // promising a retry at `now` (or producing an invalid timestamp).
+      if (
+        (cap.rpm !== undefined && cap.rpm <= 0 && providerID !== undefined && !OPAQUE_RPM_PROVIDERS.has(providerID)) ||
+        (cap.rpd !== undefined && cap.rpd <= 0) ||
+        (cap.burst !== undefined && cap.burst.count <= 0) ||
+        (cap.tpm !== undefined && cap.tpm <= 0)
+      ) canRecover = false
 
       // Mirrors underRateCaps: an unenforced guess must not produce a wait time either.
-      const providerID = parseModelKey(key)?.providerID
-      if (cap.rpm !== undefined && providerID !== undefined && !OPAQUE_RPM_PROVIDERS.has(providerID)) {
-        const inWindow = sends.filter((t) => now - t <= 60000).sort((a, b) => a - b)
-        // At the cap, a slot frees up 60s after the oldest send still in the window.
-        if (inWindow.length >= cap.rpm) at = Math.max(at, inWindow[inWindow.length - cap.rpm] + 60000)
+      if (canRecover && cap.rpm !== undefined && providerID !== undefined && !OPAQUE_RPM_PROVIDERS.has(providerID)) {
+        const inWindow = sends.filter((t) => t <= now && now - t <= 60000).sort((a, b) => a - b)
+        // At the cap, a slot frees just after the oldest send reaches 60s.
+        if (inWindow.length >= cap.rpm) at = Math.max(at, inWindow[inWindow.length - cap.rpm] + 60001)
       }
 
-      if (cap.rpd !== undefined) {
+      if (canRecover && cap.burst !== undefined) {
+        const inWindow = sends.filter((t) => t <= now && now - t <= cap.burst!.windowMs).sort((a, b) => a - b)
+        if (inWindow.length >= cap.burst.count) {
+          const requiredToExpire = inWindow.length - cap.burst.count
+          at = Math.max(at, inWindow[requiredToExpire] + cap.burst.windowMs + 1)
+        }
+      }
+
+      if (canRecover && cap.rpd !== undefined) {
         const windowStart = rpdWindowStart(now, cap.rpdWindow)
-        const inWindow = sends.filter((t) => t >= windowStart).sort((a, b) => a - b)
+        const inWindow = sends.filter((t) => t >= windowStart && t <= now).sort((a, b) => a - b)
         if (inWindow.length >= cap.rpd) {
           at = Math.max(at, rpdWindowEnd(now, cap.rpdWindow, inWindow[inWindow.length - cap.rpd]))
         }
       }
 
-      if (cap.tpm !== undefined) {
-        const used = tokensInLastMinute(ledger, key, resolved.scope, now)
+      if (canRecover && cap.tpm !== undefined) {
+        const useInput = cap.tpmTokens === 'input'
+        const used = useInput
+          ? inputTokensInLastMinute(ledger, key, resolved.scope, now)
+          : tokensInLastMinute(ledger, key, resolved.scope, now)
         if (used >= cap.tpm) {
           // Shed the oldest token events until the trailing total would fit; the
           // window clears 60s after the last one that had to go.
-          const events = tokenEventsInScope(ledger, key, resolved.scope)
-            .filter(([t]) => now - t <= 60000)
+          const sourceEvents = useInput
+            ? inputTokenEventsInScope(ledger, key, resolved.scope)
+            : tokenEventsInScope(ledger, key, resolved.scope)
+          const events = sourceEvents
+            .filter(([t]) => t <= now && now - t <= 60000)
             .sort((a, b) => a[0] - b[0])
           let remaining = used
           let freesAt = now
           for (const [t, tokens] of events) {
             remaining -= tokens
-            freesAt = t + 60000
+            freesAt = t + 60001
             if (remaining < cap.tpm) break
           }
           at = Math.max(at, freesAt)
@@ -625,6 +834,7 @@ export function nextAvailableAt(
       }
     }
 
+    if (!canRecover) continue
     if (best === null || at < best.at) best = { key, at }
   }
 
@@ -674,7 +884,9 @@ export function loadLedger(): Ledger {
 
     for (const [key, health] of Object.entries(parsed)) {
       if (!health || typeof health !== 'object') continue
-      const sends = Array.isArray(health.sends) ? health.sends.filter((t) => typeof t === 'number' && now - t <= 86400000) : []
+      const sends = Array.isArray(health.sends)
+        ? health.sends.filter((t) => typeof t === 'number' && t <= now && now - t <= SEND_EVENT_RETENTION_MS)
+        : []
       const cooldownUntil = typeof health.cooldownUntil === 'number' && health.cooldownUntil > now ? health.cooldownUntil : 0
       const success = typeof health.success === 'number' ? health.success : 0
       const error = typeof health.error === 'number' ? health.error : 0
@@ -692,12 +904,26 @@ export function loadLedger(): Ledger {
               Number.isFinite(e[0]) &&
               Number.isFinite(e[1]) &&
               e[1] > 0 &&
+              e[0] <= now && now - e[0] <= TOKEN_EVENT_RETENTION_MS
+          )
+        : []
+      const inputTokenEvents = Array.isArray(health.inputTokenEvents)
+        ? health.inputTokenEvents.filter(
+            (e): e is [number, number] =>
+              Array.isArray(e) &&
+              e.length === 2 &&
+              typeof e[0] === 'number' &&
+              typeof e[1] === 'number' &&
+              Number.isFinite(e[0]) &&
+              Number.isFinite(e[1]) &&
+              e[1] > 0 &&
+              e[0] <= now &&
               now - e[0] <= TOKEN_EVENT_RETENTION_MS
           )
         : []
 
       // Omit empty useless entries
-      if (sends.length === 0 && success === 0 && error === 0 && cooldownUntil === 0 && tokenEvents.length === 0) {
+      if (sends.length === 0 && success === 0 && error === 0 && cooldownUntil === 0 && tokenEvents.length === 0 && inputTokenEvents.length === 0) {
         continue
       }
 
@@ -709,7 +935,8 @@ export function loadLedger(): Ledger {
         last429: typeof health.last429 === 'number' ? health.last429 : null,
         latencyEwma: typeof health.latencyEwma === 'number' ? health.latencyEwma : null,
         sends,
-        ...(tokenEvents.length > 0 ? { tokenEvents } : {})
+        ...(tokenEvents.length > 0 ? { tokenEvents } : {}),
+        ...(inputTokenEvents.length > 0 ? { inputTokenEvents } : {})
       }
     }
 

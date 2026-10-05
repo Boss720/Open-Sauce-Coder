@@ -18,10 +18,14 @@ import { setupLiveWindow, type LiveWindowController } from './liveWindow'
 import { setupTray, type TrayController } from './tray'
 import { checkForUpdates, cleanupUpdater, setupUpdater, type UpdateStatus } from './updater'
 import { getStatus, onEvent, onStatus, startServer, stopServer, type ServerStatus } from './server'
+import { stopAllLeroy } from './leroy/sidecar'
 import { getHarnessController } from './harness/controller'
 
 const moduleDir = dirname(fileURLToPath(import.meta.url))
 const rendererDevUrl = process.env.ELECTRON_RENDERER_URL
+
+app.setName('opencode-desktop')
+app.setPath('userData', join(app.getPath('appData'), 'opencode-desktop'))
 
 let mainWindow: BrowserWindow | null = null
 let shuttingDown = false
@@ -367,6 +371,7 @@ if (!allowDevelopmentInstance && !app.requestSingleInstanceLock()) {
     liveWindow?.destroy()
     liveWindow = null
     stopAllGeminiLive()
+    stopAllLeroy()
     stopServer()
     unregisterIpc()
   })
@@ -375,6 +380,7 @@ if (!allowDevelopmentInstance && !app.requestSingleInstanceLock()) {
     if (shuttingDown) return
     shuttingDown = true
     stopAllGeminiLive()
+    stopAllLeroy()
     stopServer()
     unregisterIpc()
   })

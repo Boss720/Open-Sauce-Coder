@@ -12,6 +12,7 @@ coverage/
 # agent scratch
 .claude/
 .claude-octopus/
+.agents/
 
 # typescript incremental / project-reference state
 *.tsbuildinfo

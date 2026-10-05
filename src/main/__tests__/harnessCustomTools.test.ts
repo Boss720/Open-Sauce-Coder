@@ -175,4 +175,29 @@ describe('loadCustomTools', () => {
     expect(result.output).toContain('partial out')
     expect(result.error).toBe('exit 1')
   })
+
+  it('passes a sanitized child environment without host secrets', async () => {
+    process.env.TEST_SECRET_KEY = 'supersecret'
+    try {
+      writeTool(projectDir, 'clean.json', JSON.stringify({
+        name: 'clean_tool',
+        description: 'Clean',
+        parameters: { type: 'object' },
+        command: 'node clean.js'
+      }))
+
+      const registry = new ToolRegistry()
+      loadCustomTools(registry, projectDir)
+      await registry.execute('clean_tool', {}, contextFor(projectDir))
+
+      expect(execFileMock).toHaveBeenCalled()
+      const call = execFileMock.mock.calls.find((c) => c[0] === 'node')
+      expect(call).toBeDefined()
+      const opts = call![2] as { env?: Record<string, string> }
+      expect(opts.env).toBeDefined()
+      expect(opts.env?.TEST_SECRET_KEY).toBeUndefined()
+    } finally {
+      delete process.env.TEST_SECRET_KEY
+    }
+  })
 })

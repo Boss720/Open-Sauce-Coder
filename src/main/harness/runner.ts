@@ -9,9 +9,11 @@ import type {
   ProviderAdapter,
   ChatMessage,
   ChatRequest,
+  ChatResponse,
   FunctionDefinition
 } from './providers/adapter'
 import type { ToolRegistry, ToolContext } from './tools/registry'
+import { policyBroker } from '../policyBroker'
 
 export type RunnerEvent =
   | { type: 'thinking'; content: string }
@@ -55,6 +57,7 @@ export class AgentRunner {
   private readonly tools: ToolRegistry
   private readonly directory: string
   private readonly abortController = new AbortController()
+  private activeRequestId: string | null = null
   private turns = 0
   private totalUsage = { input: 0, output: 0, reasoning: 0 }
   private running = false
@@ -75,6 +78,9 @@ export class AgentRunner {
 
   abort(): void {
     this.abortController.abort()
+    if (this.activeRequestId) {
+      this.adapter.abort(this.activeRequestId)
+    }
     this.adapter.abort(this.id)
   }
 
@@ -125,8 +131,11 @@ export class AgentRunner {
         }
 
         // Build request
+        const requestId = `${this.id}-turn-${this.turns}`
+        this.activeRequestId = requestId
         const request: ChatRequest = {
-          requestId: `${this.id}-turn-${this.turns}`,
+          requestId,
+          signal: this.abortController.signal,
           model: this.profile.model,
           messages: [...messages],
           tools: toolSchemas.length > 0 ? toolSchemas : undefined,
@@ -140,7 +149,17 @@ export class AgentRunner {
         }
 
         // Call provider
-        const response = await this.adapter.chat(request)
+        let response: ChatResponse
+        try {
+          response = await this.adapter.chat(request)
+        } finally {
+          this.activeRequestId = null
+        }
+
+        if (this.abortController.signal.aborted) {
+          return this.finish('aborted', '', toolCallCount, onEvent)
+        }
+
         this.turns++
 
         // Track usage
@@ -174,22 +193,62 @@ export class AgentRunner {
 
         // Execute each tool call
         for (const tc of response.toolCalls) {
+          if (this.abortController.signal.aborted) {
+            return this.finish('aborted', '', toolCallCount, onEvent)
+          }
+
+          const toolName = tc.function.name
+          const resolvedTool = this.tools.resolve(toolName)
+          let policyViolation: string | null = null
+
+          if (!resolvedTool) {
+            policyViolation = `Tool not found: ${toolName}`
+          } else {
+            const evaluation = await policyBroker.evaluate(resolvedTool.definition, {
+              directory: this.directory,
+              profile: this.profile
+            })
+            if (!evaluation.allowed) {
+              policyViolation = evaluation.reason ?? `Tool "${toolName}" is not permitted by project policy.`
+            }
+          }
+
+          if (policyViolation) {
+            onEvent({
+              type: 'tool_result',
+              name: toolName,
+              output: '',
+              error: policyViolation
+            })
+            messages.push({
+              role: 'tool',
+              content: `Error: ${policyViolation}`,
+              tool_call_id: tc.id
+            })
+            continue
+          }
+
           const args = parseToolArgs(tc.function.arguments)
-          onEvent({ type: 'tool_call', name: tc.function.name, args })
+          onEvent({ type: 'tool_call', name: toolName, args })
           toolCallCount++
 
           const context: ToolContext = {
             directory: this.directory,
             agentId: this.profile.id,
             runId: this.id,
-            abortSignal: this.abortController.signal
+            abortSignal: this.abortController.signal,
+            profile: this.profile
           }
 
-          const result = await this.tools.execute(tc.function.name, args, context)
+          const result = await this.tools.execute(toolName, args, context)
+
+          if (this.abortController.signal.aborted) {
+            return this.finish('aborted', '', toolCallCount, onEvent)
+          }
 
           onEvent({
             type: 'tool_result',
-            name: tc.function.name,
+            name: toolName,
             output: result.output.slice(0, 2000),
             error: result.error
           })
@@ -209,6 +268,9 @@ export class AgentRunner {
       return this.finish('max_turns', '', toolCallCount, onEvent)
 
     } catch (error) {
+      if (this.abortController.signal.aborted) {
+        return this.finish('aborted', '', toolCallCount, onEvent)
+      }
       const message = error instanceof Error ? error.message : String(error)
       onEvent({ type: 'error', message })
       return this.finish('error', '', toolCallCount, onEvent, message)

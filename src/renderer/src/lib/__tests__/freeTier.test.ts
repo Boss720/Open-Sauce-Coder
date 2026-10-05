@@ -23,7 +23,17 @@ describe('freeTier', () => {
 
     it('regression: known quota-tier free models stay free', () => {
       expect(isFreeModel('google', 'gemini-3.6-flash')).toBe(true)
+      expect(isFreeModel('google', 'gemini-3.8-flash')).toBe(true)
+      expect(isFreeModel('google', 'gemini-3.7-flash')).toBe(true)
+      expect(isFreeModel('google', 'gemini-3-flash-preview')).toBe(true)
+      expect(isFreeModel('google', 'gemma-4-31b-it')).toBe(true)
+      expect(isFreeModel('google', 'gemma-4-26b-a4b-it')).toBe(true)
       expect(isFreeModel('groq', 'llama-3.3-70b-versatile')).toBe(true)
+    })
+
+    it('does not infer free access for models without a verified free quota', () => {
+      expect(isFreeModel('google', 'gemini-3.1-pro')).toBe(false)
+      expect(isFreeModel('google', 'gemini-omni-1.1-flash')).toBe(false)
     })
   })
 

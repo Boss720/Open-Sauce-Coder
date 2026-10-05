@@ -51,6 +51,17 @@ export function lastAssistantTokenTotal(messages: MessageWithParts[]): number {
   return 0
 }
 
+/** Input tokens from the most recent assistant message, used for input-only TPM caps. */
+export function lastAssistantInputTokenCount(messages: MessageWithParts[]): number {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const info = messages[i].info
+    if (!isAssistant(info) || !info.tokens) continue
+    const input = info.tokens.input
+    return typeof input === 'number' && Number.isFinite(input) && input > 0 ? input : 0
+  }
+  return 0
+}
+
 /** The model's context window limit in tokens. Returns 0 if not found. */
 export function contextLimit(
   providers: Provider[],

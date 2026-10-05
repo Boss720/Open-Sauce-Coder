@@ -17,8 +17,13 @@ export function projectSlug(name: string): string {
  * Existing symlink/reparse-point segments are rejected so containment cannot
  * be bypassed after lexical normalization.
  */
-export function assertSubpath(baseDir: string, relativeOrAbsPath: string): string {
-  if (!baseDir.trim() || !relativeOrAbsPath.trim()) {
+export function assertSubpath(
+  baseDir: string,
+  relativeOrAbsPath: string,
+  options?: { allowRoot?: boolean }
+): string {
+  const allowRoot = Boolean(options?.allowRoot)
+  if (!baseDir.trim() || (!allowRoot && !relativeOrAbsPath.trim())) {
     throw new Error('Path and base directory must be non-empty.')
   }
 
@@ -28,8 +33,14 @@ export function assertSubpath(baseDir: string, relativeOrAbsPath: string): strin
     : resolve(base, relativeOrAbsPath)
   const rel = relative(base, target)
 
-  if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-    throw new Error('Path must stay strictly inside the project directory.')
+  if (allowRoot) {
+    if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+      throw new Error('Path must stay strictly inside the project directory.')
+    }
+  } else {
+    if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+      throw new Error('Path must stay strictly inside the project directory.')
+    }
   }
 
   // Check every existing segment, including the base itself. On Windows,
@@ -39,11 +50,13 @@ export function assertSubpath(baseDir: string, relativeOrAbsPath: string): strin
     const stat = lstatSync(current)
     if (stat.isSymbolicLink()) throw new Error('Symbolic-link project roots are not allowed.')
   }
-  for (const segment of rel.split(sep)) {
-    current = resolve(current, segment)
-    if (!existsSync(current)) continue
-    const stat = lstatSync(current)
-    if (stat.isSymbolicLink()) throw new Error('Symbolic links are not allowed in project paths.')
+  if (rel) {
+    for (const segment of rel.split(sep)) {
+      current = resolve(current, segment)
+      if (!existsSync(current)) continue
+      const stat = lstatSync(current)
+      if (stat.isSymbolicLink()) throw new Error('Symbolic links are not allowed in project paths.')
+    }
   }
 
   // Resolve both ends when possible as a second check against platform-specific
@@ -52,8 +65,14 @@ export function assertSubpath(baseDir: string, relativeOrAbsPath: string): strin
     const realBase = realpathSync.native(base)
     const realTarget = realpathSync.native(target)
     const realRel = relative(realBase, realTarget)
-    if (!realRel || realRel === '..' || realRel.startsWith(`..${sep}`) || isAbsolute(realRel)) {
-      throw new Error('Resolved path escapes the project directory.')
+    if (allowRoot) {
+      if (realRel === '..' || realRel.startsWith(`..${sep}`) || isAbsolute(realRel)) {
+        throw new Error('Resolved path escapes the project directory.')
+      }
+    } else {
+      if (!realRel || realRel === '..' || realRel.startsWith(`..${sep}`) || isAbsolute(realRel)) {
+        throw new Error('Resolved path escapes the project directory.')
+      }
     }
   }
 

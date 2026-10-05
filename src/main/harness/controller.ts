@@ -129,9 +129,11 @@ export class HarnessController {
       status.usage = { input: live.usage.input, output: live.usage.output }
 
       if (event.type === 'done') {
-        status.status = event.result.finishReason === 'complete' ? 'completed'
-          : event.result.finishReason === 'aborted' ? 'cancelled'
-            : 'failed'
+        if (status.status !== 'cancelled') {
+          status.status = event.result.finishReason === 'complete' ? 'completed'
+            : event.result.finishReason === 'aborted' ? 'cancelled'
+              : 'failed'
+        }
         status.completedAt = Date.now()
         status.result = event.result
         if (event.result.error) status.error = event.result.error
@@ -145,9 +147,11 @@ export class HarnessController {
 
       this.onEvent?.(runId, event)
     }).catch((error: unknown) => {
-      status.status = 'failed'
-      status.completedAt = Date.now()
-      status.error = error instanceof Error ? error.message : String(error)
+      if (status.status !== 'cancelled') {
+        status.status = 'failed'
+        status.completedAt = Date.now()
+        status.error = error instanceof Error ? error.message : String(error)
+      }
       this.onEvent?.(runId, { type: 'error', message: status.error ?? 'Unknown error' })
     })
 

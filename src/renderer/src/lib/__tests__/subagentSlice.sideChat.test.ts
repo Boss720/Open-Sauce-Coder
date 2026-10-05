@@ -155,4 +155,35 @@ describe('startSideChat', () => {
     await slice.startSideChat('   \n  ')
     expect(create).not.toHaveBeenCalled()
   })
+
+  it('inherits parent sessionReadOnly and sessionAgents into child session and passes them to prompt', async () => {
+    const create = vi.fn(async (_d: string, title?: string, _parentID?: string) =>
+      child('side-ro', title ?? '')
+    )
+    const prompt = vi.fn(async (_args: Record<string, unknown>) => undefined)
+    mockApi.mockReturnValue({
+      sessions: { create },
+      prompt,
+      messages: vi.fn(async () => [])
+    } as unknown as ReturnType<typeof api>)
+
+    const { get, slice } = setup({
+      activeSessionID: 'main-ro',
+      sessionReadOnly: { 'main-ro': true },
+      sessionAgents: { 'main-ro': 'reviewer' }
+    } as unknown as Partial<AppState>)
+
+    await slice.startSideChat('inspect something safely')
+
+    expect(get().sessionReadOnly?.['side-ro']).toBe(true)
+    expect(get().sessionAgents?.['side-ro']).toBe('reviewer')
+    expect(prompt).toHaveBeenCalledTimes(1)
+    expect(prompt.mock.calls[0][0]).toMatchObject({
+      sessionID: 'side-ro',
+      text: 'inspect something safely',
+      agent: 'reviewer',
+      tools: expect.any(Object)
+    })
+    expect((prompt.mock.calls[0][0] as { tools?: Record<string, boolean> }).tools?.write).toBe(false)
+  })
 })

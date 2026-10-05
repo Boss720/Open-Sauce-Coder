@@ -751,7 +751,7 @@ export function SettingsPanel({ open, onClose }: { open: boolean; onClose: () =>
                 <span className="providers__name">API Keys (BYOK)</span>
               </div>
               <p style={{ fontSize: '11.5px', color: 'var(--fg-dim)', marginTop: '4px', marginBottom: '8px' }}>
-                Add, test, or remove your own API key for any provider.
+                Add, test, or remove your NanoGPT subscription or Gemini key.
               </p>
               <button
                 type="button"

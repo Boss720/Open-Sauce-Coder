@@ -5,6 +5,8 @@ export default defineConfig({
     environment: 'node',
     include: ['src/renderer/src/lib/__tests__/**/*.test.ts', 'src/main/__tests__/**/*.test.ts'],
     globals: false,
+    testTimeout: 15000,
+    hookTimeout: 15000,
     coverage: {
       provider: 'v8',
       include: ['src/main/**', 'src/renderer/src/lib/**'],

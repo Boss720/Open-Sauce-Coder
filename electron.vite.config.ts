@@ -37,7 +37,7 @@ const prodCspPlugin = {
   apply: 'build' as const,
   transformIndexHtml(html: string): string {
     const prodCsp =
-      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'"
+      "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'"
     return html.replace(
       /<meta[^>]+http-equiv=["']Content-Security-Policy["'][^>]*>/i,
       `<meta http-equiv="Content-Security-Policy" content="${prodCsp}">`
@@ -76,6 +76,7 @@ export default defineConfig({
 
   renderer: {
     root: r('./src/renderer'),
+    cacheDir: r('./node_modules/.vite'),
     plugins: [react(), prodCspPlugin],
     resolve: {
       alias: {

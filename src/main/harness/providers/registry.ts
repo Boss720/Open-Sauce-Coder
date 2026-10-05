@@ -7,6 +7,7 @@
 import type { ProviderAdapter } from './adapter'
 import { NanoGptAdapter } from './nanogpt'
 import { GeminiAdapter } from './gemini'
+import { OpenAiCompatibleAdapter, OPENAI_COMPATIBLE_CONFIGS } from './openaiCompatible'
 
 export class ProviderRegistry {
   private adapters = new Map<string, ProviderAdapter>()
@@ -52,6 +53,16 @@ export class ProviderRegistry {
         return new NanoGptAdapter()
       case 'google':
         return new GeminiAdapter()
+      case 'groq':
+      case 'mistral':
+      case 'openrouter':
+      case 'moonshot':
+      case 'xai':
+      case 'cerebras': {
+        const config = OPENAI_COMPATIBLE_CONFIGS[providerId]
+        if (!config) throw new Error(`Missing OpenAI-compatible configuration for: ${providerId}`)
+        return new OpenAiCompatibleAdapter(config)
+      }
       default:
         throw new Error(
           `Unsupported harness provider: "${providerId}". ` +
@@ -61,7 +72,16 @@ export class ProviderRegistry {
   }
 }
 
-const SUPPORTED_PROVIDERS = new Set(['nanogpt', 'google'])
+const SUPPORTED_PROVIDERS = new Set([
+  'nanogpt',
+  'google',
+  'groq',
+  'mistral',
+  'openrouter',
+  'moonshot',
+  'xai',
+  'cerebras'
+])
 
 /** Main-process singleton instance. */
 export const providerRegistry = new ProviderRegistry()

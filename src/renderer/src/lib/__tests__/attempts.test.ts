@@ -287,6 +287,16 @@ describe('attempts reducer', () => {
       expect(allEffects.find((e) => e.kind === 'begin_failover')).toBeDefined()
     })
 
+    it('tpm-drop → begin_failover without retrying the unchanged request', () => {
+      const { state: sent } = dispatch(INITIAL_ATTEMPT_STATE, sendEvent())
+      const { allEffects } = dispatch(sent, {
+        type: 'error', sessionID: 'sess-1', errorClass: 'tpm-drop', now: T0 + 1000,
+      })
+      const failover = allEffects.find((e) => e.kind === 'begin_failover') as Extract<Effect, { kind: 'begin_failover' }>
+      expect(failover.reason).toContain('token throughput')
+      expect(allEffects.some((e) => e.kind === 'wait_and_retry_same')).toBe(false)
+    })
+
     it('transient → transient_retry', () => {
       const { state: sent } = dispatch(INITIAL_ATTEMPT_STATE, sendEvent())
       const { allEffects } = dispatch(sent, {

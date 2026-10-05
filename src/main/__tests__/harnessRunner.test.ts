@@ -135,4 +135,111 @@ describe('AgentRunner', () => {
     expect(result.error).toBe('provider down')
     expect(events.some((e) => e.type === 'error' && e.message === 'provider down')).toBe(true)
   })
+
+  it('rejects mutating tool before executor is called when profile is readOnly', async () => {
+    const tools = new ToolRegistry()
+    const writeExecutor = vi.fn(async () => ({ output: 'written' }))
+    tools.register(
+      { name: 'fs_write', description: 'write', parameters: { type: 'object' }, category: 'write' },
+      writeExecutor
+    )
+
+    const adapter = stubAdapter([
+      response({ finishReason: 'tool_calls', toolCalls: [toolCall('fs_write', { path: 'a.txt' })] }),
+      response({ content: 'done', finishReason: 'stop' })
+    ])
+
+    const events: RunnerEvent[] = []
+    const runner = makeRunner(adapter, tools, profile({ readOnly: true }))
+    const result = await runner.run('write file', (e) => events.push(e))
+
+    // Pre-execution policy broker must block executor dispatch
+    expect(writeExecutor).toHaveBeenCalledTimes(0)
+    const toolResult = events.find((e) => e.type === 'tool_result')
+    expect(toolResult).toMatchObject({
+      name: 'fs_write',
+      error: expect.stringMatching(/read-only policy/i)
+    })
+    expect(result.finishReason).toBe('complete')
+  })
+
+  it('rejects tool on profile toolDenyList before executor is called', async () => {
+    const tools = new ToolRegistry()
+    const shellExecutor = vi.fn(async () => ({ output: 'executed' }))
+    tools.register(
+      { name: 'shell', description: 'shell', parameters: { type: 'object' }, category: 'shell' },
+      shellExecutor
+    )
+
+    const adapter = stubAdapter([
+      response({ finishReason: 'tool_calls', toolCalls: [toolCall('shell', { command: 'dir' })] }),
+      response({ content: 'done', finishReason: 'stop' })
+    ])
+
+    const events: RunnerEvent[] = []
+    const runner = makeRunner(adapter, tools, profile({ toolDenyList: ['shell'] }))
+    await runner.run('run shell', (e) => events.push(e))
+
+    expect(shellExecutor).toHaveBeenCalledTimes(0)
+    const toolResult = events.find((e) => e.type === 'tool_result')
+    expect(toolResult).toMatchObject({
+      name: 'shell',
+      error: expect.stringMatching(/denied by profile policy/i)
+    })
+  })
+
+  it('rejects tool calls when profile specifies empty tools: []', async () => {
+    const tools = new ToolRegistry()
+    const readExecutor = vi.fn(async () => ({ output: 'read' }))
+    tools.register(
+      { name: 'fs_read', description: 'read', parameters: { type: 'object' }, category: 'read' },
+      readExecutor
+    )
+
+    const adapter = stubAdapter([
+      response({ finishReason: 'tool_calls', toolCalls: [toolCall('fs_read', { path: 'x.txt' })] }),
+      response({ content: 'done', finishReason: 'stop' })
+    ])
+
+    const events: RunnerEvent[] = []
+    const runner = makeRunner(adapter, tools, profile({ tools: [] }))
+    await runner.run('read file', (e) => events.push(e))
+
+    expect(readExecutor).toHaveBeenCalledTimes(0)
+    const toolResult = events.find((e) => e.type === 'tool_result')
+    expect(toolResult).toMatchObject({
+      name: 'fs_read',
+      error: expect.stringMatching(/no tools allowed/i)
+    })
+  })
+
+  it('aborts queue and halts further tool execution when stop occurs during tool batch', async () => {
+    const tools = new ToolRegistry()
+    let runnerRef: AgentRunner | null = null
+    const tool1 = vi.fn(async () => {
+      runnerRef?.abort()
+      return { output: 'tool1 ran' }
+    })
+    const tool2 = vi.fn(async () => ({ output: 'tool2 should never run' }))
+
+    tools.register({ name: 't1', description: 't1', parameters: {}, category: 'read' }, tool1)
+    tools.register({ name: 't2', description: 't2', parameters: {}, category: 'read' }, tool2)
+
+    const adapter = stubAdapter([
+      response({
+        finishReason: 'tool_calls',
+        toolCalls: [toolCall('t1'), toolCall('t2')]
+      })
+    ])
+
+    const runner = makeRunner(adapter, tools)
+    runnerRef = runner
+    const events: RunnerEvent[] = []
+    const result = await runner.run('batch', (e) => events.push(e))
+
+    expect(tool1).toHaveBeenCalledTimes(1)
+    expect(tool2).toHaveBeenCalledTimes(0)
+    expect(result.finishReason).toBe('aborted')
+    expect(events.at(-1)).toEqual({ type: 'done', result })
+  })
 })

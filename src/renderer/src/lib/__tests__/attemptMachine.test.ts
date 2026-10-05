@@ -496,6 +496,31 @@ describe('beginFailover', () => {
     expect(getFake().busy).toBe(false)
     expect(getFake().error).toBe('dispatch failed')
   })
+
+  it('preserves immutable policy snapshot (agent and tools) on failover re-prompt', async () => {
+    const { handle } = createHandle()
+    registerStore(handle)
+    const promptFn = vi.fn(async () => {})
+    const revertFn = vi.fn(async () => {})
+    mockApi.mockReturnValue(fakeApi({ prompt: promptFn, revertMessage: revertFn }))
+    attempt()
+    const policy = { agent: 'reviewer', tools: { fs_write: false, fs_read: true } }
+    setLastPrompt({ text: 'hello there', parts: undefined, sessionID: 'sess-1', userMessageID: 'usr-1', policy })
+
+    const result = await beginFailover('sess-1', '/proj', 'hello there', undefined, 'boom', 'google/gemini-3.6-flash', undefined, policy)
+
+    expect(result).toBe(true)
+    expect(promptFn).toHaveBeenCalledWith({
+      directory: '/proj',
+      sessionID: 'sess-1',
+      providerID: 'groq',
+      modelID: 'llama-3.3-70b-versatile',
+      text: 'hello there',
+      parts: undefined,
+      agent: 'reviewer',
+      tools: { fs_write: false, fs_read: true }
+    })
+  })
 })
 
 describe('recoverHungAttempt', () => {

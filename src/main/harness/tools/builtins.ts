@@ -1,7 +1,9 @@
 import { open, readdir, writeFile } from 'node:fs/promises'
-import { execFile } from 'node:child_process'
+import { execFile, type ChildProcess } from 'node:child_process'
 import { promisify } from 'node:util'
 import { assertSubpath } from '../../projectsPaths'
+import { buildChildEnv } from '../../env'
+import { killProcessTree } from './processKill'
 import type { ToolRegistry } from './registry'
 
 const execFileAsync = promisify(execFile)
@@ -95,9 +97,10 @@ export function registerBuiltins(registry: ToolRegistry): void {
     },
     async (args, context) => {
       try {
-        const path = String(args.path)
+        const raw = typeof args.path === 'string' ? args.path : String(args.path ?? '')
+        const path = raw.trim().length === 0 ? '.' : raw
         const recursive = Boolean(args.recursive)
-        const abs = assertSubpath(context.directory, path)
+        const abs = assertSubpath(context.directory, path, { allowRoot: true })
         const entries = await readdir(abs, { recursive })
         return { output: entries.join('\n') }
       } catch (err) {
@@ -157,7 +160,7 @@ export function registerBuiltins(registry: ToolRegistry): void {
     async (args, context) => {
       try {
         const pattern = String(args.pattern)
-        const searchPath = args.path ? assertSubpath(context.directory, String(args.path)) : context.directory
+        const searchPath = args.path ? assertSubpath(context.directory, String(args.path), { allowRoot: true }) : context.directory
         
         const rgArgs = ['-n', pattern]
         if (typeof args.include === 'string' && args.include) {
@@ -165,10 +168,23 @@ export function registerBuiltins(registry: ToolRegistry): void {
         }
         rgArgs.push(searchPath)
         
-        const { stdout } = await execFileAsync('rg', rgArgs, {
+        const promise = execFileAsync('rg', rgArgs, {
           cwd: context.directory,
-          maxBuffer: 2 * 1024 * 1024
+          maxBuffer: 2 * 1024 * 1024,
+          env: buildChildEnv({}),
+          signal: context.abortSignal
         })
+        const child = (promise as { child?: ChildProcess }).child
+        if (child && context.abortSignal) {
+          const onAbort = () => killProcessTree(child)
+          if (context.abortSignal.aborted) {
+            onAbort()
+          } else {
+            context.abortSignal.addEventListener('abort', onAbort, { once: true })
+            promise.finally(() => context.abortSignal.removeEventListener('abort', onAbort)).catch(() => {})
+          }
+        }
+        const { stdout } = await promise
         return { output: stdout }
       } catch (err: unknown) {
         const execErr = err as ExecError
@@ -206,10 +222,23 @@ export function registerBuiltins(registry: ToolRegistry): void {
         const sh = isWin ? 'cmd.exe' : '/bin/sh'
         const shArgs = isWin ? ['/d', '/s', '/c', command] : ['-c', command]
         
-        const { stdout, stderr } = await execFileAsync(sh, shArgs, {
+        const promise = execFileAsync(sh, shArgs, {
           cwd,
-          maxBuffer: 2 * 1024 * 1024
+          maxBuffer: 2 * 1024 * 1024,
+          env: buildChildEnv({}),
+          signal: context.abortSignal
         })
+        const child = (promise as { child?: ChildProcess }).child
+        if (child && context.abortSignal) {
+          const onAbort = () => killProcessTree(child)
+          if (context.abortSignal.aborted) {
+            onAbort()
+          } else {
+            context.abortSignal.addEventListener('abort', onAbort, { once: true })
+            promise.finally(() => context.abortSignal.removeEventListener('abort', onAbort)).catch(() => {})
+          }
+        }
+        const { stdout, stderr } = await promise
         
         let out = stdout + (stderr ? '\n' + stderr : '')
         if (out.length > 50000) {

@@ -94,6 +94,7 @@ export type AttemptEvent =
 export type ErrorClass =
   | 'rpm-wait'
   | 'rpd-drop'
+  | 'tpm-drop'
   | 'timeout'
   | 'transient'
   | 'client'
@@ -406,6 +407,7 @@ function handleError(
     }
 
     case 'rpd-drop':
+    case 'tpm-drop':
     case 'timeout': {
       if (state.retries >= state.maxRetries) {
         const next: AttemptState = { ...state, watchdog: 'idle' }
@@ -416,7 +418,11 @@ function handleError(
       effects.push({
         kind: 'begin_failover',
         attemptId: state.attemptId,
-        reason: e.errorClass === 'rpd-drop' ? 'Daily quota exhausted' : 'Request timed out',
+        reason: e.errorClass === 'rpd-drop'
+          ? 'Daily quota exhausted'
+          : e.errorClass === 'tpm-drop'
+            ? 'Input token throughput limit exceeded'
+            : 'Request timed out',
         errorClass: e.errorClass,
         retryAfterMs: e.retryAfterMs,
       })

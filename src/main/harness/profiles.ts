@@ -81,8 +81,7 @@ function optionalBoolean(value: unknown): boolean | undefined {
 
 function optionalStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined
-  const result = value.filter((item): item is string => typeof item === 'string' && item.length > 0)
-  return result.length > 0 ? result : undefined
+  return value.filter((item): item is string => typeof item === 'string' && item.length > 0)
 }
 
 const VALID_BILLING_ROUTES = new Set(['subscription', 'standard'])
@@ -104,21 +103,34 @@ export function validateProfile(raw: unknown): AgentProfile {
   const provider = requireString(raw.provider, 'provider')
   const model = requireString(raw.model, 'model')
 
-  const profile: AgentProfile = { id, name, provider, model }
+  // Preserve all raw fields so custom/advanced extension properties are retained
+  const profile: AgentProfile & Record<string, unknown> = {
+    ...raw,
+    id,
+    name,
+    provider,
+    model
+  }
 
   const description = optionalString(raw.description)
   if (description !== undefined) profile.description = description
+  else delete profile.description
 
-  profile.fallbackModels = optionalStringArray(raw.fallbackModels)
+  const fallbackModels = optionalStringArray(raw.fallbackModels)
+  if (fallbackModels !== undefined) profile.fallbackModels = fallbackModels
+  else delete profile.fallbackModels
 
   const temperature = optionalNumber(raw.temperature, 0, 2)
   if (temperature !== undefined) profile.temperature = temperature
+  else delete profile.temperature
 
   const maxTokens = optionalNumber(raw.maxTokens, 1, 1_000_000)
   if (maxTokens !== undefined) profile.maxTokens = Math.round(maxTokens)
+  else delete profile.maxTokens
 
   const topP = optionalNumber(raw.topP, 0, 1)
   if (topP !== undefined) profile.topP = topP
+  else delete profile.topP
 
   if (isRecord(raw.thinking)) {
     const enabled = optionalBoolean(raw.thinking.enabled)
@@ -126,43 +138,64 @@ export function validateProfile(raw: unknown): AgentProfile {
       profile.thinking = { enabled }
       const budget = optionalNumber(raw.thinking.budget, 1, 1_000_000)
       if (budget !== undefined) profile.thinking.budget = Math.round(budget)
+    } else {
+      delete profile.thinking
     }
+  } else if ('thinking' in raw) {
+    delete profile.thinking
   }
 
   const systemPrompt = optionalString(raw.systemPrompt)
   if (systemPrompt !== undefined) profile.systemPrompt = systemPrompt
+  else delete profile.systemPrompt
 
   const systemPromptFile = optionalString(raw.systemPromptFile)
   if (systemPromptFile !== undefined) profile.systemPromptFile = systemPromptFile
+  else delete profile.systemPromptFile
 
-  profile.tools = optionalStringArray(raw.tools)
-  profile.toolDenyList = optionalStringArray(raw.toolDenyList)
+  const tools = optionalStringArray(raw.tools)
+  if (tools !== undefined) profile.tools = tools
+  else delete profile.tools
+
+  const toolDenyList = optionalStringArray(raw.toolDenyList)
+  if (toolDenyList !== undefined) profile.toolDenyList = toolDenyList
+  else delete profile.toolDenyList
 
   const readOnly = optionalBoolean(raw.readOnly)
   if (readOnly !== undefined) profile.readOnly = readOnly
+  else delete profile.readOnly
 
   const maxConcurrent = optionalNumber(raw.maxConcurrent, 1, 50)
   if (maxConcurrent !== undefined) profile.maxConcurrent = Math.round(maxConcurrent)
+  else delete profile.maxConcurrent
 
   const maxTurns = optionalNumber(raw.maxTurns, 1, 500)
   if (maxTurns !== undefined) profile.maxTurns = Math.round(maxTurns)
+  else delete profile.maxTurns
 
   const tokenBudget = optionalNumber(raw.tokenBudget, 1)
   if (tokenBudget !== undefined) profile.tokenBudget = Math.round(tokenBudget)
+  else delete profile.tokenBudget
 
   const costBudget = optionalNumber(raw.costBudget, 0)
   if (costBudget !== undefined) profile.costBudget = costBudget
+  else delete profile.costBudget
 
   if (typeof raw.routingSuffix === 'string' && VALID_ROUTING_SUFFIXES.has(raw.routingSuffix)) {
     profile.routingSuffix = raw.routingSuffix
+  } else {
+    delete profile.routingSuffix
   }
 
   if (typeof raw.billingRoute === 'string' && VALID_BILLING_ROUTES.has(raw.billingRoute)) {
     profile.billingRoute = raw.billingRoute as 'subscription' | 'standard'
+  } else {
+    delete profile.billingRoute
   }
 
   const caching = optionalBoolean(raw.caching)
   if (caching !== undefined) profile.caching = caching
+  else delete profile.caching
 
   const builtin = optionalBoolean(raw.builtin)
   if (builtin !== undefined) profile.builtin = builtin

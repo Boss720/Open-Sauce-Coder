@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ToolRegistry, type ToolContext } from '../harness/tools/registry'
@@ -58,6 +58,39 @@ describe('builtin tool: fs_write', () => {
     const big = 'x'.repeat(2 * 1024 * 1024 + 1)
     const result = await registry.execute('fs_write', { path: 'big.txt', content: big }, contextFor(projectDir))
     expect(result.error).toMatch(/Refusing to write/)
+  })
+})
+
+describe('builtin tool: fs_list', () => {
+  let projectDir: string
+
+  beforeEach(() => {
+    projectDir = mkdtempSync(join(tmpdir(), 'opencode-fs-list-'))
+    writeFileSync(join(projectDir, 'root-file.txt'), 'hello root')
+  })
+
+  afterEach(() => {
+    rmSync(projectDir, { recursive: true, force: true })
+  })
+
+  it('lists project root directory with path "."', async () => {
+    const registry = registryWithBuiltins()
+    const result = await registry.execute('fs_list', { path: '.' }, contextFor(projectDir))
+    expect(result.error).toBeUndefined()
+    expect(result.output).toContain('root-file.txt')
+  })
+
+  it('lists project root directory with empty path ""', async () => {
+    const registry = registryWithBuiltins()
+    const result = await registry.execute('fs_list', { path: '' }, contextFor(projectDir))
+    expect(result.error).toBeUndefined()
+    expect(result.output).toContain('root-file.txt')
+  })
+
+  it('rejects path escape attempts', async () => {
+    const registry = registryWithBuiltins()
+    const result = await registry.execute('fs_list', { path: '../escape' }, contextFor(projectDir))
+    expect(result.error).toMatch(/project directory|inside/i)
   })
 })
 

@@ -40,24 +40,24 @@ describe('keys module', () => {
   })
 
   it('setKey and listKeys with masked tail for last 4 chars', () => {
-    setKey('groq', 'gsk_secret123')
+    setKey('nanogpt', 'nano_secret123')
     const rows = listKeys()
 
-    const groqRow = rows.find((r) => r.providerID === 'groq')
-    expect(groqRow).toBeDefined()
-    expect(groqRow?.maskedTail).toBe('t123') // last 4 chars of 'gsk_secret123'
-    expect(groqRow?.envVar).toBe('GROQ_API_KEY')
+    const nanoRow = rows.find((r) => r.providerID === 'nanogpt')
+    expect(nanoRow).toBeDefined()
+    expect(nanoRow?.maskedTail).toBe('t123') // last 4 chars of 'nano_secret123'
+    expect(nanoRow?.envVar).toBe('NANOGPT_API_KEY')
 
     // Ensure the full key is never exposed
-    const fullKeyInRows = rows.some((r) => JSON.stringify(r).includes('gsk_secret123'))
+    const fullKeyInRows = rows.some((r) => JSON.stringify(r).includes('nano_secret123'))
     expect(fullKeyInRows).toBe(false)
   })
 
   it('loadByokEnv returns plaintext via mocked decrypt', () => {
-    setKey('groq', 'gsk_secret123')
+    setKey('nanogpt', 'nano_secret123')
     const env = loadByokEnv()
 
-    expect(env.GROQ_API_KEY).toBe('gsk_secret123')
+    expect(env.NANOGPT_API_KEY).toBe('nano_secret123')
   })
 
   it('loadByokEnv includes alias expansion for GEMINI_API_KEY', () => {
@@ -70,31 +70,15 @@ describe('keys module', () => {
     expect(env.GOOGLE_API_KEY).toBe('test-gemini-key')
   })
 
-  it('loadByokEnv includes alias expansion for HUGGINGFACE_API_KEY', () => {
-    setKey('huggingface', 'hf_test_key')
-    const env = loadByokEnv()
-
-    expect(env.HUGGINGFACE_API_KEY).toBe('hf_test_key')
-    expect(env.HF_TOKEN).toBe('hf_test_key')
-  })
-
-  it('loadByokEnv includes alias expansion for NVIDIA_NIM_API_KEY', () => {
-    setKey('nvidia', 'nvidia_test_key')
-    const env = loadByokEnv()
-
-    expect(env.NVIDIA_NIM_API_KEY).toBe('nvidia_test_key')
-    expect(env.NVIDIA_API_KEY).toBe('nvidia_test_key')
-  })
-
   it('listKeys never exposes the full key', () => {
-    setKey('groq', 'gsk_verylongsecretkey123')
-    setKey('openai', 'sk_live_abcdefghijklmnop')
+    setKey('nanogpt', 'nano_verylongsecretkey123')
+    setKey('google', 'gemini_abcdefghijklmnop')
 
     const rows = listKeys()
     const rowsJson = JSON.stringify(rows)
 
-    expect(rowsJson).not.toContain('gsk_verylongsecretkey123')
-    expect(rowsJson).not.toContain('sk_live_abcdefghijklmnop')
+    expect(rowsJson).not.toContain('nano_verylongsecretkey123')
+    expect(rowsJson).not.toContain('gemini_abcdefghijklmnop')
 
     // Only masked tails should be present
     expect(rowsJson).toContain('y123')
@@ -102,23 +86,23 @@ describe('keys module', () => {
   })
 
   it('deleteKey removes key from listKeys', () => {
-    setKey('groq', 'gsk_secret123')
+    setKey('nanogpt', 'nano_secret123')
     let rows = listKeys()
-    expect(rows.some((r) => r.providerID === 'groq')).toBe(true)
+    expect(rows.some((r) => r.providerID === 'nanogpt')).toBe(true)
 
-    deleteKey('groq')
+    deleteKey('nanogpt')
     rows = listKeys()
-    expect(rows.some((r) => r.providerID === 'groq')).toBe(false)
+    expect(rows.some((r) => r.providerID === 'nanogpt')).toBe(false)
   })
 
   it('deleteKey removes key from loadByokEnv', () => {
-    setKey('groq', 'gsk_secret123')
+    setKey('nanogpt', 'nano_secret123')
     let env = loadByokEnv()
-    expect(env.GROQ_API_KEY).toBe('gsk_secret123')
+    expect(env.NANOGPT_API_KEY).toBe('nano_secret123')
 
-    deleteKey('groq')
+    deleteKey('nanogpt')
     env = loadByokEnv()
-    expect(env.GROQ_API_KEY).toBeUndefined()
+    expect(env.NANOGPT_API_KEY).toBeUndefined()
   })
 
   it('setKey with unknown providerID throws', () => {
@@ -126,8 +110,8 @@ describe('keys module', () => {
   })
 
   it('setKey with empty key throws', () => {
-    expect(() => setKey('groq', '')).toThrow(/empty key/)
-    expect(() => setKey('groq', '   ')).toThrow(/empty key/)
+    expect(() => setKey('nanogpt', '')).toThrow(/empty key/)
+    expect(() => setKey('nanogpt', '   ')).toThrow(/empty key/)
   })
 
   it('encrypts MCP credentials separately from workspace configuration', () => {
@@ -147,20 +131,19 @@ describe('keys module', () => {
   })
 
   it('multiple keys can be stored and listed independently', () => {
-    setKey('groq', 'gsk_secret123')
-    setKey('openai', 'sk_live_abc')
-    setKey('anthropic', 'sk-ant-xyz')
+    setKey('nanogpt', 'nano_secret123')
+    setKey('google', 'gemini_secret123')
 
     const rows = listKeys()
-    expect(rows).toHaveLength(3)
-    expect(rows.map((r) => r.providerID).sort()).toEqual(['anthropic', 'groq', 'openai'])
+    expect(rows).toHaveLength(2)
+    expect(rows.map((r) => r.providerID).sort()).toEqual(['google', 'nanogpt'])
   })
 
   it('listKeys with short key produces null maskedTail', () => {
-    setKey('groq', 'abc') // Only 3 chars, less than 4
+    setKey('nanogpt', 'abc') // Only 3 chars, less than 4
     const rows = listKeys()
 
-    const groqRow = rows.find((r) => r.providerID === 'groq')
-    expect(groqRow?.maskedTail).toBeNull()
+    const nanoRow = rows.find((r) => r.providerID === 'nanogpt')
+    expect(nanoRow?.maskedTail).toBeNull()
   })
 })

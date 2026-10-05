@@ -44,7 +44,8 @@ export function isTokenThroughputLimit(errStr: string): boolean {
  *
  * Classification rules:
  * - `rpm-wait`: 429 with short cooldown (or Retry-After ≤ 120s)
- * - `rpd-drop`: 429 with "per day"/"quota"/"RESOURCE_EXHAUSTED" + daily context
+ * - `rpd-drop`: explicit daily quota dimension
+ * - `tpm-drop`: one request exceeds the input-token throughput ceiling
  * - `timeout`: request timed out (TTFT or stall)
  * - `transient`: 5xx, ECONNRESET, network errors
  * - `client`: 4xx (not 429), bad request, invalid key
@@ -62,16 +63,15 @@ export function classifyError(
     return 'timeout'
   }
 
-  // A request larger than the account TPM allowance cannot succeed unchanged
-  // on this provider. Route through the provider-drop failover path.
-  if (isTokenThroughputLimit(errStr)) return 'rpd-drop'
+  // A request larger than the account TPM allowance cannot succeed unchanged.
+  if (isTokenThroughputLimit(errStr)) return 'tpm-drop'
 
-  // Daily quota / resource exhaustion — these are always rpd-drop regardless
-  // of whether "429" appears in the string
-  if (
-    lower.includes('resource_exhausted') ||
-    lower.includes('quota') && (lower.includes('day') || lower.includes('exceeded') || lower.includes('reached') || lower.includes('exhausted'))
-  ) {
+  const compact = lower.replace(/[\s_-]+/g, '')
+  const dailyDimension =
+    lower.includes('per day') || lower.includes('per_day') || lower.includes('daily') ||
+    lower.includes('requests_per_day') || compact.includes('requestsperday') || compact.includes('perday') ||
+    lower.includes('for today') || lower.includes('today')
+  if (dailyDimension && (lower.includes('quota') || lower.includes('limit') || lower.includes('resource_exhausted') || /\b429\b/.test(errStr) || status === 429)) {
     return 'rpd-drop'
   }
 
@@ -80,15 +80,16 @@ export function classifyError(
   const is429 =
     status === 429 ||
     /\b429\b/.test(errStr) ||
+    lower.includes('resource_exhausted') ||
+    lower.includes('quota exceeded') ||
+    lower.includes('quota exhausted') ||
     lower.includes('rate limit') ||
     lower.includes('ratelimit') ||
     lower.includes('too many requests')
 
   if (is429) {
-    // Check if daily context is present
-    if (lower.includes('per day') || lower.includes('per_day') || lower.includes('daily')) {
-      return 'rpd-drop'
-    }
+    // Generic exhaustion often omits the quota dimension. Use a short retry
+    // unless the response explicitly identifies a daily ceiling.
     return 'rpm-wait'
   }
 
@@ -137,7 +138,7 @@ export function classifyError(
  */
 export function isRateLimitError(errStr: string): boolean {
   const cls = classifyError(errStr)
-  return cls === 'rpm-wait' || cls === 'rpd-drop'
+  return cls === 'rpm-wait' || cls === 'rpd-drop' || cls === 'tpm-drop'
 }
 
 // ---------------------------------------------------------------------------

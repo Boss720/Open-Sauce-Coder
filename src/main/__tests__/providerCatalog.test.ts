@@ -24,18 +24,18 @@ describe('providerCatalog', () => {
     expect(unique.size).toBe(vars.length)
   })
 
-  it('catalogByProvider resolves groq correctly', () => {
-    const entry = catalogByProvider('groq')
-    expect(entry).toBeDefined()
-    expect(entry?.envVar).toBe('GROQ_API_KEY')
-    expect(entry?.label).toBe('Groq')
+  it('includes all supported BYOK providers', () => {
+    const expected = ['nanogpt', 'google', 'groq', 'mistral', 'openrouter', 'moonshot', 'xai', 'cerebras']
+    expect(PROVIDER_CATALOG.map((entry) => entry.providerID)).toEqual(expected)
+    expect(catalogByProvider('groq')).toBeDefined()
+    expect(catalogByProvider('openai')).toBeUndefined()
   })
 
   it('catalogByEnvVar resolves GEMINI_API_KEY correctly', () => {
     const entry = catalogByEnvVar('GEMINI_API_KEY')
     expect(entry).toBeDefined()
     expect(entry?.providerID).toBe('google')
-    expect(entry?.label).toBe('Google Gemini')
+    expect(entry?.label).toBe('Gemini (including Gemini Live)')
   })
 
   it('unknown lookups return undefined', () => {
@@ -44,7 +44,7 @@ describe('providerCatalog', () => {
   })
 
   it('lookups are case-sensitive', () => {
-    expect(catalogByProvider('GROQ')).toBeUndefined()
+    expect(catalogByProvider('GOOGLE')).toBeUndefined()
     expect(catalogByEnvVar('groq_api_key')).toBeUndefined()
   })
 
@@ -78,26 +78,10 @@ describe('providerCatalog', () => {
     expect(catalogByEnvVar('NANOGPT_API_KEY')?.providerID).toBe('nanogpt')
   })
 
-  it('catalogByProvider resolves moonshotai correctly', () => {
-    const entry = catalogByProvider('moonshotai')
-    expect(entry).toBeDefined()
-    expect(entry?.envVar).toBe('MOONSHOT_API_KEY')
-    expect(entry?.label).toBe('Moonshot Kimi')
-  })
-
-  it('moonshotai envVar is a member of the ALLOWLIST', () => {
-    const entry = catalogByProvider('moonshotai')
-    expect(entry).toBeDefined()
-    expect(ALLOWLIST.has(entry!.envVar)).toBe(true)
-  })
-
-  it('moonshotai test.url points at the international models endpoint', () => {
-    const entry = catalogByProvider('moonshotai')
-    expect(entry?.test?.url).toBe('https://api.moonshot.ai/v1/models')
-    expect(entry?.test?.authScheme).toBe('Bearer')
-  })
-
-  it('catalogByEnvVar resolves MOONSHOT_API_KEY to the moonshotai provider', () => {
-    expect(catalogByEnvVar('MOONSHOT_API_KEY')?.providerID).toBe('moonshotai')
+  it('resolves newly restored providers and keeps non-catalog vars undefined', () => {
+    expect(catalogByEnvVar('GROQ_API_KEY')?.providerID).toBe('groq')
+    expect(ALLOWLIST.has('GROQ_API_KEY')).toBe(true)
+    expect(catalogByEnvVar('OPENAI_API_KEY')).toBeUndefined()
+    expect(ALLOWLIST.has('OPENAI_API_KEY')).toBe(false)
   })
 })

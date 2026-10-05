@@ -128,6 +128,10 @@ export class NanoGptAdapter implements ProviderAdapter {
     if (request.caching) body.caching = true
 
     const abort = new AbortController()
+    if (request.signal) {
+      if (request.signal.aborted) abort.abort()
+      else request.signal.addEventListener('abort', () => abort.abort(), { once: true })
+    }
     this.inflight.set(request.requestId, abort)
 
     const release = await nanogptLimiter.acquireSlot()
@@ -139,11 +143,18 @@ export class NanoGptAdapter implements ProviderAdapter {
     }
   }
 
-  abort(requestId: string): void {
-    const controller = this.inflight.get(requestId)
+  abort(requestIdOrRunId: string): void {
+    const controller = this.inflight.get(requestIdOrRunId)
     if (controller) {
       controller.abort()
-      this.inflight.delete(requestId)
+      this.inflight.delete(requestIdOrRunId)
+      return
+    }
+    for (const [id, ctrl] of this.inflight.entries()) {
+      if (id === requestIdOrRunId || id.startsWith(`${requestIdOrRunId}-`)) {
+        ctrl.abort()
+        this.inflight.delete(id)
+      }
     }
   }
 

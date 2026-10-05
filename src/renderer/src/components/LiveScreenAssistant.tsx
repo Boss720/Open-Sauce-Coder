@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { JSX } from 'react'
 import { appendTranscriptChunk, type LiveTranscriptEntry } from '../lib/liveTranscript'
+import { LeroyPanel } from './LeroyPanel'
 import { collectProjectContext } from '../lib/liveContext'
 import { DEFAULT_LIVE_PREFS, LIVE_VOICES, loadLivePrefs, loadPrefs, saveLivePrefs, type LivePrefs } from '../lib/prefs'
 import './live-screen.css'
@@ -31,6 +32,10 @@ export function LiveScreenAssistant({ onClose }: { onClose?: () => void }): JSX.
   const [muted, setMuted] = useState(false)
   const [settings, setSettings] = useState<LivePrefs>(() => loadLivePrefs())
   const [settingsOpen, setSettingsOpen] = useState(false)
+  // 'copilot' is the built-in Gemini Live path; 'leroy' hands the window to the
+  // gemini-live-agent sidecar, which owns the mic/screen itself. They can never
+  // run together — switching stops the built-in session first.
+  const [mode, setMode] = useState<'copilot' | 'leroy'>('copilot')
   const statusRef = useRef<LiveStatus>('idle')
   const transcriptRef = useRef<LiveTranscriptEntry[]>([])
   const nextEntryId = useRef(0)
@@ -323,15 +328,26 @@ export function LiveScreenAssistant({ onClose }: { onClose?: () => void }): JSX.
 
   const busy = status === 'live' || status === 'connecting' || status === 'reconnecting'
 
+  const switchMode = (next: 'copilot' | 'leroy'): void => {
+    if (next === mode) return
+    // Leaving copilot mode must release the microphone and screen capture
+    // before the sidecar asks the OS for them.
+    if (next === 'leroy' && busy) stop()
+    setMode(next)
+  }
+
   return <div className="live-screen" role="dialog" aria-modal="true">
-    <div className="live-screen__head"><div><span className="live-screen__eyebrow">{settings.model.toUpperCase()} LIVE</span><h1>Screen copilot</h1><p>Share a window, speak naturally, and get live visual help.</p></div><div className="live-screen__head-actions"><button className="live-screen__close" onClick={togglePinned} aria-pressed={pinned} title={pinned ? 'Unpin from always-on-top' : 'Keep this window on top of others'}>{pinned ? 'Unpin' : 'Pin'}</button><button className="live-screen__close" onClick={() => void window.api.live.revealTranscripts()} title="Open the saved transcripts folder">Transcripts</button><button className="live-screen__close" onClick={() => setSettingsOpen((open) => !open)} aria-expanded={settingsOpen}>Settings</button><button className="live-screen__close" onClick={close}>Close</button></div></div>
-    {settingsOpen && <div className="live-screen__settings">
+    <div className="live-screen__head"><div><span className="live-screen__eyebrow">{settings.model.toUpperCase()} LIVE</span><h1>Screen copilot</h1><p>Share a window, speak naturally, and get live visual help.</p></div><div className="live-screen__head-actions"><button className="live-screen__close" onClick={() => switchMode(mode === 'leroy' ? 'copilot' : 'leroy')} aria-pressed={mode === 'leroy'} title={mode === 'leroy' ? 'Back to the built-in screen copilot' : 'Hand this window to the Leroy agent — local tools with approval prompts'}>{mode === 'leroy' ? 'Copilot' : 'Leroy'}</button><button className="live-screen__close" onClick={togglePinned} aria-pressed={pinned} title={pinned ? 'Unpin from always-on-top' : 'Keep this window on top of others'}>{pinned ? 'Unpin' : 'Pin'}</button><button className="live-screen__close" onClick={() => void window.api.live.revealTranscripts()} title="Open the saved transcripts folder">Transcripts</button><button className="live-screen__close" onClick={() => setSettingsOpen((open) => !open)} aria-expanded={settingsOpen}>Settings</button><button className="live-screen__close" onClick={close}>Close</button></div></div>
+    {settingsOpen && mode === 'copilot' && <div className="live-screen__settings">
       <label className="live-screen__field">Voice<select value={settings.voice} onChange={(event) => updateSettings({ voice: event.target.value })}>{LIVE_VOICES.map((voice) => <option key={voice} value={voice}>{voice}</option>)}</select></label>
       <label className="live-screen__field">Model<input value={settings.model} onChange={(event) => updateSettings({ model: event.target.value })} placeholder={DEFAULT_LIVE_PREFS.model} spellCheck={false} /></label>
       <label className="live-screen__field live-screen__field--wide">System prompt<textarea value={settings.systemInstruction} onChange={(event) => updateSettings({ systemInstruction: event.target.value })} rows={3} /></label>
       <p className="live-screen__settings-note">Applied on connect — changes mid-session take effect after a stop and restart.</p>
     </div>}
+    {mode === 'leroy' && <div className="live-screen__body live-screen__body--leroy"><LeroyPanel onSendToChat={(text) => sendToChat(text, 'Answer')} /></div>}
+    {mode === 'copilot' && <>
     <div className="live-screen__body"><div className="live-screen__preview"><canvas ref={canvas} /><div className="live-screen__preview-label"><span className={`live-screen__dot live-screen__dot--${status}`} />{status === 'live' ? (muted ? 'Screen live — mic muted' : 'Screen + microphone live') : status === 'reconnecting' ? 'Reconnecting…' : status === 'connecting' ? 'Connecting…' : 'Screen preview'}</div></div><div className="live-screen__conversation"><div className="live-screen__messages" aria-live="polite">{transcript.length ? transcript.map((entry) => <p className={`live-screen__message live-screen__message--${entry.role}`} key={entry.id}><strong>{entry.role === 'gemini' ? 'Gemini' : entry.role === 'you' ? 'You' : 'Status'}</strong>{entry.text}{entry.role === 'gemini' && <button type="button" className="live-screen__handoff" onClick={() => sendToChat(entry.text, 'Answer')} title="Send this answer to the OpenCode chat as a prompt">→ Chat</button>}</p>) : <p className="live-screen__muted">Your visual conversation will appear here.</p>}</div><div className="live-screen__controls"><button className={`live-screen__mute${muted ? ' live-screen__mute--on' : ''}`} onClick={toggleMuted} aria-pressed={muted} disabled={status !== 'live'} title={muted ? 'Unmute microphone' : 'Mute microphone'}>{muted ? 'Unmute' : 'Mute'}</button><input value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') sendPrompt() }} placeholder="Ask about the screen…" disabled={status !== 'live'} /><button onClick={sendPrompt} disabled={status !== 'live'}>Send</button></div><div className="live-screen__handoffs"><button type="button" className="live-screen__handoff" onClick={describeProject} disabled={status !== 'live'} title="Read the open project's git state and tell Gemini what you are working on">Send project context</button><button type="button" className="live-screen__handoff" onClick={sendTranscriptToChat} title="Send this whole conversation to the OpenCode chat as a prompt">Send transcript → Chat</button></div></div></div>
     <div className="live-screen__foot"><span className="live-screen__provider">Uses the encrypted Google key from Providers</span><button className="live-screen__start" onClick={busy ? stop : () => void connect()}>{status === 'live' || status === 'reconnecting' ? 'Stop sharing' : status === 'connecting' ? 'Cancel' : 'Start screen share'}</button>{error && <span className="live-screen__error">{error}</span>}{notice && <span className="live-screen__notice">{notice}</span>}</div>
+    </>}
   </div>
 }

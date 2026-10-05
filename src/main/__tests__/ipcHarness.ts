@@ -84,6 +84,8 @@ function buildMocks() {
     setKey: vi.fn<AnyFn>(),
     deleteKey: vi.fn<AnyFn>(),
     testKey: vi.fn<AnyFn>(async () => true),
+    // Read by leroy/sidecar.ts at import time (its default dependency table).
+    loadByokEnv: vi.fn<AnyFn>(() => ({}) as Record<string, string>),
 
     // --- projects ---
     listProjects: vi.fn<AnyFn>(async () => [] as unknown[]),
@@ -233,7 +235,8 @@ export async function loadIpc(
     listKeys: mocks.listKeys,
     setKey: mocks.setKey,
     deleteKey: mocks.deleteKey,
-    testKey: mocks.testKey
+    testKey: mocks.testKey,
+    loadByokEnv: mocks.loadByokEnv
   }))
   vi.doMock('../projects', () => ({
     listProjects: mocks.listProjects,

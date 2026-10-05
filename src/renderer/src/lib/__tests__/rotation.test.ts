@@ -15,15 +15,21 @@ describe('rotation helpers', () => {
       const message =
         'Request too large for model openai/gpt-oss-120b on tokens per minute (TPM): Limit 8000, Requested 32569'
       expect(isTokenThroughputLimit(message)).toBe(true)
-      expect(classifyError(message, { statusCode: 413 })).toBe('rpd-drop')
+      expect(classifyError(message, { statusCode: 413 })).toBe('tpm-drop')
       expect(isTokenThroughputLimit('Context window limit exceeded')).toBe(false)
     })
 
     it('classifies daily quota as rpd-drop', () => {
       expect(classifyError('Quota reached for today')).toBe('rpd-drop')
-      expect(classifyError('RESOURCE_EXHAUSTED')).toBe('rpd-drop')
+      expect(classifyError('RESOURCE_EXHAUSTED')).toBe('rpm-wait')
       expect(classifyError('429 per day limit exceeded')).toBe('rpd-drop')
       expect(classifyError('daily quota exhausted')).toBe('rpd-drop')
+      expect(classifyError("RESOURCE_EXHAUSTED: GenerateContentRequestsPerDayPerProjectPerModel-FreeTier")).toBe('rpd-drop')
+    })
+
+    it('does not park a generic quota error until the daily reset', () => {
+      expect(classifyError('RESOURCE_EXHAUSTED: quota exceeded', { statusCode: 429 })).toBe('rpm-wait')
+      expect(classifyError('GenerateRequestsPerMinutePerProjectPerModel-FreeTier', { statusCode: 429 })).toBe('rpm-wait')
     })
 
     it('classifies timeouts', () => {
@@ -79,6 +85,7 @@ describe('rotation helpers', () => {
       expect(isRateLimitError('Rate limit exceeded')).toBe(true)
       expect(isRateLimitError('Quota reached for today')).toBe(true)
       expect(isRateLimitError('RESOURCE_EXHAUSTED')).toBe(true)
+      expect(isRateLimitError('Request too large for tokens per minute (TPM) limit, Requested 32569')).toBe(true)
     })
 
     it('returns false for non-rate-limit errors', () => {
@@ -213,7 +220,7 @@ describe('rotation helpers', () => {
       expect(PREFERRED_MODELS[0]).toHaveProperty('providerID')
       expect(PREFERRED_MODELS[0]).toHaveProperty('modelID')
       expect(PREFERRED_MODELS[0].providerID).toBe('google')
-      expect(PREFERRED_MODELS[0].modelID).toBe('gemini-3.6-flash')
+      expect(PREFERRED_MODELS[0].modelID).toBe('gemini-3.8-flash')
     })
   })
 })

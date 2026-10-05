@@ -10,6 +10,7 @@ export type ToolContext = {
   agentId: string
   runId: string
   abortSignal: AbortSignal
+  profile?: { tools?: string[]; toolDenyList?: string[]; readOnly?: boolean }
 }
 
 export type ToolResult = {
@@ -40,6 +41,9 @@ export class ToolRegistry {
   }
 
   forProfile(profile: { tools?: string[]; toolDenyList?: string[]; readOnly?: boolean }): ToolDefinition[] {
+    if (profile.tools && profile.tools.length === 0) {
+      return []
+    }
     const all = Array.from(this.tools.values()).map(t => t.definition)
     
     return all.filter(def => {
@@ -81,6 +85,20 @@ export class ToolRegistry {
     const tool = this.tools.get(name)
     if (!tool) {
       return { output: '', error: `Tool not found: ${name}` }
+    }
+    if (context.profile) {
+      if (context.profile.readOnly && tool.definition.category !== 'read') {
+        return { output: '', error: `Tool "${name}" is not permitted under read-only policy.` }
+      }
+      if (context.profile.toolDenyList && context.profile.toolDenyList.includes(name)) {
+        return { output: '', error: `Tool "${name}" is denied by profile policy.` }
+      }
+      if (context.profile.tools && context.profile.tools.length === 0) {
+        return { output: '', error: `Tool "${name}" is not permitted (no tools allowed).` }
+      }
+      if (context.profile.tools && !context.profile.tools.includes('*') && !context.profile.tools.includes(name)) {
+        return { output: '', error: `Tool "${name}" is not in profile allowed tools.` }
+      }
     }
     try {
       return await tool.executor(args, context)

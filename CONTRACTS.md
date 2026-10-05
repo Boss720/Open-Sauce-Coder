@@ -238,6 +238,16 @@ Every handler returns `Promise<T>` and **throws** on failure (renderer catches).
                         // the directory is derived in main, so there is nothing to
                         // validate and no way to point it at an arbitrary location.
 
+// --- Leroy sidecar (the gemini-live-agent Python harness) ---
+'oc:leroy:start'  (options?: { agentDir?: string; settings?: Record<string, unknown> }) => void
+                        // spawns one sidecar for the calling window, replacing any
+                        // existing one (the child owns the audio devices, so two
+                        // would fight over the microphone). `settings` is a partial
+                        // Python-side AppSettings; unknown keys are dropped there.
+                        // Throws when the checkout or a Google key is missing.
+'oc:leroy:stop'   () => void   // disconnect, then kill; idempotent
+'oc:leroy:status' () => boolean // is a sidecar running for this window
+
 // --- Crash log (main's own crash.log in userData, written by src/main/crashlog.ts) ---
 'oc:crashlog:read'   () => CrashLogReport
                         // BOUNDED tail read: at most the last 64 KiB of crash.log
@@ -266,6 +276,9 @@ Every handler returns `Promise<T>` and **throws** on failure (renderer catches).
 
 ```ts
 'oc:live:send'   (input: GeminiLiveInput) => void  // realtime audio / video / text input
+'oc:leroy:send'  (command: LeroyCommand) => void   // validated in main; a malformed
+                        // command comes back as a `sidecar_error` event rather
+                        // than rejecting, since this channel has no reply.
 ```
 
 `oc:saveFile` gained an optional `encoding?: 'utf8' | 'base64'` (defaults to `'utf8'`, so existing
@@ -373,6 +386,7 @@ export type UpdateStatus =
 ```ts
 'oc:event'                 (event: { type: string; properties: any })   // every SSE event, verbatim
 'oc:live:message'          (event: GeminiLiveEvent)                      // Gemini Live message/error/closed/reconnecting
+'oc:leroy:event'           (event: LeroyEvent)                           // Leroy sidecar NDJSON stream + sidecar_exit/sidecar_error
 'oc:server'                (status: { running: boolean; url: string | null; streamConnected: boolean; error?: string })
 //   `running` means the HTTP server answers. `streamConnected` means the SSE
 //   subscription is live. They are independent: the stream can drop and
@@ -447,6 +461,13 @@ export interface OpencodeApi {
     onMessage(cb: (event: GeminiLiveEvent) => void): () => void
     saveTranscript(a: { messages: LiveTranscriptMessage[] }): Promise<string> // -> saved file path
     revealTranscripts(): Promise<void>
+  }
+  leroy: {
+    start(options?: LeroyStartOptions): Promise<void>
+    send(command: LeroyCommand): void
+    stop(): Promise<void>
+    status(): Promise<boolean>
+    onEvent(cb: (event: LeroyEvent) => void): () => void
   }
   crashLog: {
     read(): Promise<CrashLogReport>   // bounded tail read; empty report when no log exists
@@ -544,7 +565,7 @@ Users store LLM-provider API keys in-app; keys are encrypted at rest and injecte
 `userData/byok-keys.json`:
 
 ```json
-{ "version": 1, "keys": { "GROQ_API_KEY": "<base64 of safeStorage.encryptString(value)>" } }
+{ "version": 1, "keys": { "NANOGPT_API_KEY": "<base64 of safeStorage.encryptString(value)>" } }
 ```
 
 One entry per canonical env var (resolved from the provider catalog). Written pretty, mode `0o600`
@@ -557,9 +578,9 @@ conflict** — before `buildChildEnv`. `loadByokEnv` never throws: undecryptable
 skipped so the server still starts. The existing `.env` log line is kept; a second `record()` line
 logs `loaded N BYOK keys (encrypted store): <names>` using `redactedSummary` (key NAMES only).
 
-`env.ts` now `export`s `ALLOWLIST` and `ALIASES` (contents unchanged) so `keys.ts` validates every
-env var against the allowlist and reuses the alias logic. Existing blocklist/allowlist/CVE hardening
-is untouched.
+`env.ts` now `export`s `ALLOWLIST` and `ALIASES` so `keys.ts` validates every env var against the
+restricted NanoGPT/Gemini allowlist and reuses the Google alias logic. Existing
+blocklist/allowlist/CVE hardening is otherwise untouched.
 
 **DECISION — env-injection, NOT the SDK `auth.set`.** opencode's `auth.set` persists the raw key in
 **plaintext** to opencode's `auth.json`. We reject that: the only at-rest copy must be under OS
@@ -571,17 +592,12 @@ the child process, never written to disk by us).
 error message, or crash file — errors reference only the providerID/envVar.
 
 **Catalog dependency.** `keys.ts` imports `PROVIDER_CATALOG`, `catalogByProvider` from
-`src/main/providerCatalog.ts` (Stream 3C) for the providerID → envVar mapping and per-provider
-`test` endpoints.
+`src/main/providerCatalog.ts` for the providerID → envVar mapping and per-provider test endpoints.
 
-**Moonshot Kimi (verified native against opencode 1.18.4, 2026-07-28).** `/config/providers` ships
-built-in `moonshotai` (international, `https://api.moonshot.ai/v1`) and `moonshotai-cn`
-(`https://api.moonshot.cn/v1`) providers; both read `MOONSHOT_API_KEY` from the child env
-(`source: env`). The BYOK catalog manages that single key under providerID `moonshotai`; with the
-key injected, BOTH provider ids appear in the model picker (the `-cn` row is inert for keys not
-valid on the China endpoint — that is a user choice, not app state). No config injection is needed,
-unlike NanoGPT. Test endpoint: `GET https://api.moonshot.ai/v1/models` (Bearer) — returns 401
-unauthenticated, verified reachable.
+**Supported BYOK providers.** The catalog intentionally contains only `nanogpt` (the
+subscription-scoped NanoGPT coding path) and `google` (Gemini, including Gemini Live). Other
+OpenCode providers may still appear in the SDK's read-only model inventory when configured outside
+this app, but this app does not accept, persist, list, or inject their BYOK keys.
 
 ## NanoGPT provider (subscription-scoped)
 
@@ -932,6 +948,18 @@ export function selectModel(
     authenticatedProviders: ReadonlySet<string>
   }
 ): ModelKey | null
+export function selectModelDetailed(
+  pool: ModelKey[] | null,
+  ledger: Ledger,
+  caps: ModelCapsMap,
+  now: number,
+  opts: {
+    sticky: boolean
+    current: ModelKey | null
+    available: ReadonlySet<ModelKey>
+    authenticatedProviders: ReadonlySet<string>
+  }
+): ModelSelectionExplanation
 // selectModel hard-floor (R11): skips any candidate with ≥5 total attempts and <20% success ratio.
 // Scoring: healthScore ∈ [-∞, 1] dominates; coding quality contributes at most 0.12 (normalized from /6),
 // so a healthy model always outranks a broken high-quality one.
@@ -1675,6 +1703,53 @@ harness: {
 The multi-agent DAG orchestrator and the additional provider adapters (`openai-compat`,
 `anthropic`, `opencode-bridge`) are deliberately deferred. The `opencode serve` flow
 remains the primary chat path; the harness does not replace it.
+
+## Leroy sidecar (gemini-live-agent)
+
+The Live window can run the **Leroy** harness — the `gemini-live-agent` Python project — as
+a child process instead of the built-in `oc:live:*` path. It adds local tool calling with
+per-call approval gating, dual-key tier failover on 429, session resumption, and a
+usage/cost readout. The built-in path stays the default and is unchanged.
+
+```
+Live window (renderer) --oc:leroy:*--> main/leroy/sidecar.ts --NDJSON--> python bridge_stdio.py --> Supervisor
+```
+
+- **One child per window**, keyed by `webContents.id` exactly like `geminiLive.ts`, killed
+  when that window is destroyed and on app quit (`stopAllLeroy`).
+- **The child owns the microphone, speaker and screen capture.** In Leroy mode the renderer
+  must NOT also run the mic worklet or the canvas frame pump — the two would compete for
+  the same devices.
+- **NDJSON both ways**, one JSON object per line. stdout carries only protocol frames; the
+  Python side logs to stderr. `LEROY_PROTOCOL_VERSION` (1) is checked at the `ready`
+  handshake and a mismatch kills the child rather than guessing.
+- **Frames sent before `ready` are queued**, then flushed in order — the child emits its
+  handshake before it will read a `connect`.
+- **Location:** `agentDir` option, else `LEROY_AGENT_DIR`, else `~/projects/gemini-live-agent`.
+  The interpreter is that checkout's `.venv` when present, else `python`/`python3` on PATH.
+
+### Security invariants — binding, not advisory
+
+1. **Keys go through the environment, never argv or the protocol.** `startLeroy` reads the
+   Google key via `loadByokEnv()` and passes it in the child env built by `buildChildEnv`
+   (the same allowlist the opencode child gets). argv is world-readable in the process table.
+2. **A second key is optional and opt-in.** `GOOGLE_API_KEY_FREE` is forwarded only when
+   configured; its presence is what arms the dual-tier fallback cascade on the Python side.
+3. **Every renderer command is validated in main** (`validateLeroyCommand`) before it
+   reaches stdin. `call_id` is charset-restricted and text is length-capped so a crafted
+   value cannot forge a second NDJSON frame — notably a `set_gating_mode: yolo` that would
+   disable approval prompts.
+4. **Nothing the child writes is trusted.** `parseLeroyEvent` drops unknown types, non-JSON
+   lines and wrongly-typed fields instead of forwarding them, so a stray print or a newer
+   sidecar cannot take the session down.
+5. **stderr is redacted** before it reaches the renderer in a `sidecar_exit` frame.
+6. **Approval gating is the user's, not the model's.** A `tool_approval_requested` event
+   must be answered by an explicit user action; the renderer never auto-approves.
+
+### Deferred follow-ups — do not code against these
+
+The audit journal still writes to disk on the Python side but is not surfaced in the UI,
+and the sidecar is not bundled by electron-builder — Leroy mode requires the checkout.
 
 ## Conventions
 

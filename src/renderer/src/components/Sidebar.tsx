@@ -24,6 +24,43 @@ const CLOSE_PROVIDERS_EVENT = 'opencode-desktop:close-providers'
 /** Dispatched to ask Chat.tsx to open the global chat-search modal. */
 const OPEN_SEARCH_EVENT = 'chat:open-search'
 
+type SidebarIconName = 'tasks' | 'agents' | 'providers' | 'images' | 'screen'
+
+function SidebarIcon({ name }: { name: SidebarIconName }): JSX.Element {
+  const paths: Record<SidebarIconName, JSX.Element> = {
+    tasks: <><rect x="3" y="4" width="18" height="15" rx="3" /><path d="M8 9h8M8 13h5" /></>,
+    agents: <><circle cx="9" cy="8" r="3" /><path d="M3.5 20a5.5 5.5 0 0 1 11 0M16 5.5a3 3 0 0 1 0 5.8M17 15a5 5 0 0 1 3.5 4.8" /></>,
+    providers: <><rect x="9" y="2.5" width="6" height="5" rx="1.5" /><rect x="2.5" y="16.5" width="6" height="5" rx="1.5" /><rect x="15.5" y="16.5" width="6" height="5" rx="1.5" /><path d="M12 7.5v5M5.5 16.5v-4h13v4" /></>,
+    images: <><rect x="3" y="3" width="18" height="18" rx="3" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="m21 15-5-5L5 21" /></>,
+    screen: <><rect x="3" y="4" width="18" height="14" rx="2" /><path d="M8 22h8m-4-4v4" /></>
+  }
+  return <svg className="sidebar__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>
+}
+
+function SidebarNavItem({
+  icon,
+  label,
+  active = false,
+  onClick
+}: {
+  icon: SidebarIconName
+  label: string
+  active?: boolean
+  onClick: () => void
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      className={active ? 'sidebar__nav-item sidebar__nav-item--active' : 'sidebar__nav-item'}
+      aria-current={active ? 'page' : undefined}
+      onClick={onClick}
+    >
+      <SidebarIcon name={icon} />
+      <span>{label}</span>
+    </button>
+  )
+}
+
 function stamp(s: Session): number {
   return s.time.updated || s.time.created || 0
 }
@@ -200,12 +237,6 @@ export function Sidebar({ onOpenLiveScreen }: { onOpenLiveScreen?: () => void })
 
   return (
     <div className="sidebar">
-      <div className="titlebar">
-        <span className="titlebar__mark" aria-hidden="true" />
-        <span className="titlebar__name">opencode desktop</span>
-        <span className="titlebar__sub">any model</span>
-      </div>
-
       {directory === null ? (
         <>
           <div className="sidebar__new">
@@ -215,17 +246,21 @@ export function Sidebar({ onOpenLiveScreen }: { onOpenLiveScreen?: () => void })
               onClick={() => void pickDirectory()}
               title="Choose the project folder OpenCode works in (Ctrl+O)"
             >
-              + New chat
+              + New task
               <span className="sidebar__kbd">Ctrl+O</span>
             </button>
           </div>
 
           <div className="sidebar__nav">
-            <button type="button" className={activeView === 'chats' ? 'sidebar__nav-item sidebar__nav-item--active' : 'sidebar__nav-item'} onClick={() => setActiveView('chats')}>Chats</button>
-            <button type="button" className={activeView === 'projects' ? 'sidebar__nav-item sidebar__nav-item--active' : 'sidebar__nav-item'} onClick={() => setActiveView('projects')}>Projects</button>
-            <button type="button" className={activeView === 'images' ? 'sidebar__nav-item sidebar__nav-item--active' : 'sidebar__nav-item'} onClick={() => setActiveView('images')}>Images</button>
-            <button type="button" className={activeView === 'harness' ? 'sidebar__nav-item sidebar__nav-item--active' : 'sidebar__nav-item'} onClick={() => setActiveView('harness')}>Harness</button>
-            <button type="button" className="sidebar__nav-item" onClick={onOpenLiveScreen}>Live screen</button>
+            <div className="sidebar__group-label">Workspace</div>
+            <SidebarNavItem icon="tasks" label="Tasks" active={activeView === 'chats'} onClick={() => setActiveView('chats')} />
+            <SidebarNavItem icon="agents" label="Agents" active={activeView === 'harness'} onClick={() => setActiveView('harness')} />
+            <SidebarNavItem icon="providers" label="Providers" onClick={() => setProvidersOpen(true)} />
+          </div>
+          <div className="sidebar__nav-secondary">
+            <div className="sidebar__group-label">Tools</div>
+            <SidebarNavItem icon="images" label="Images" active={activeView === 'images'} onClick={() => setActiveView('images')} />
+            <SidebarNavItem icon="screen" label="Live screen" onClick={() => onOpenLiveScreen?.()} />
           </div>
 
           <button
@@ -234,7 +269,7 @@ export function Sidebar({ onOpenLiveScreen }: { onOpenLiveScreen?: () => void })
             disabled
             title="Open a project first"
           >
-            🔍 Search chats
+            🔍 Search tasks
           </button>
 
           <div className="sidebar__empty">
@@ -257,17 +292,21 @@ export function Sidebar({ onOpenLiveScreen }: { onOpenLiveScreen?: () => void })
               onClick={() => { setActiveView('chats'); void newSession() }}
               title="Start a new session (Ctrl+N)"
             >
-              + New chat
+              + New task
               <span className="sidebar__kbd">Ctrl+N</span>
             </button>
           </div>
 
           <div className="sidebar__nav">
-            <button type="button" className={activeView === 'chats' ? 'sidebar__nav-item sidebar__nav-item--active' : 'sidebar__nav-item'} onClick={() => setActiveView('chats')}>Chats</button>
-            <button type="button" className={activeView === 'projects' ? 'sidebar__nav-item sidebar__nav-item--active' : 'sidebar__nav-item'} onClick={() => setActiveView('projects')}>Projects</button>
-            <button type="button" className={activeView === 'images' ? 'sidebar__nav-item sidebar__nav-item--active' : 'sidebar__nav-item'} onClick={() => setActiveView('images')}>Images</button>
-            <button type="button" className={activeView === 'harness' ? 'sidebar__nav-item sidebar__nav-item--active' : 'sidebar__nav-item'} onClick={() => setActiveView('harness')}>Harness</button>
-            <button type="button" className="sidebar__nav-item" onClick={onOpenLiveScreen}>Live screen</button>
+            <div className="sidebar__group-label">Workspace</div>
+            <SidebarNavItem icon="tasks" label="Tasks" active={activeView === 'chats'} onClick={() => setActiveView('chats')} />
+            <SidebarNavItem icon="agents" label="Agents" active={activeView === 'harness'} onClick={() => setActiveView('harness')} />
+            <SidebarNavItem icon="providers" label="Providers" onClick={() => setProvidersOpen(true)} />
+          </div>
+          <div className="sidebar__nav-secondary">
+            <div className="sidebar__group-label">Tools</div>
+            <SidebarNavItem icon="images" label="Images" active={activeView === 'images'} onClick={() => setActiveView('images')} />
+            <SidebarNavItem icon="screen" label="Live screen" onClick={() => onOpenLiveScreen?.()} />
           </div>
 
           <button
@@ -279,11 +318,11 @@ export function Sidebar({ onOpenLiveScreen }: { onOpenLiveScreen?: () => void })
             }}
             title="Search across every session's messages (Ctrl+Shift+F)"
           >
-            🔍 Search chats
+            🔍 Search tasks
           </button>
 
           <div className="sidebar__listhead">
-            <span className="sidebar__label">Recents</span>
+            <span className="sidebar__label">Recent tasks</span>
             <span className="sidebar__count">{ordered.length}</span>
           </div>
 
@@ -291,7 +330,7 @@ export function Sidebar({ onOpenLiveScreen }: { onOpenLiveScreen?: () => void })
             <input
               type="text"
               className="sidebar__search-input"
-              placeholder="Search sessions..."
+              placeholder="Search tasks..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
@@ -541,12 +580,11 @@ export function Sidebar({ onOpenLiveScreen }: { onOpenLiveScreen?: () => void })
           )}
           <button
             type="button"
-            className="sidebar__btn"
-            onClick={() => void pickDirectory()}
-            title="Choose the project folder OpenCode works in (Ctrl+O)"
+            className={activeView === 'projects' ? 'sidebar__btn sidebar__project-settings sidebar__project-settings--active' : 'sidebar__btn sidebar__project-settings'}
+            onClick={() => setActiveView('projects')}
+            title="Open project settings"
           >
-            Open folder…
-            <span className="sidebar__kbd">Ctrl+O</span>
+            Project settings
           </button>
         </div>
 
@@ -554,13 +592,8 @@ export function Sidebar({ onOpenLiveScreen }: { onOpenLiveScreen?: () => void })
             fallback for reachability when no session/composer is on screen (e.g. empty state). */}
         <ModelPicker compact />
 
-        <button
-          type="button"
-          className="sidebar__btn"
-          onClick={() => setProvidersOpen(true)}
-          title="See which model providers are connected"
-        >
-          Providers
+        <button type="button" className="sidebar__btn sidebar__change-folder" onClick={() => void pickDirectory()} title="Choose another project folder (Ctrl+O)">
+          Change folder <span className="sidebar__kbd">Ctrl+O</span>
         </button>
       </div>
 

@@ -22,6 +22,7 @@ type Draft = {
   readOnly: boolean
   allTools: boolean
   tools: string[]
+  source?: Partial<AgentProfile>
 }
 
 const EMPTY_DRAFT: Draft = {
@@ -50,7 +51,8 @@ function parseNum(text: string): number | undefined {
 }
 
 function draftFrom(profile: AgentProfile): Draft {
-  const tools = profile.tools ?? []
+  const isWildcard = profile.tools?.includes('*') ?? (profile.tools === undefined)
+  const explicitTools = profile.tools ? profile.tools.filter((t) => t !== '*') : []
   return {
     id: profile.id,
     name: profile.name,
@@ -63,8 +65,9 @@ function draftFrom(profile: AgentProfile): Draft {
     tokenBudget: profile.tokenBudget === undefined ? '' : String(profile.tokenBudget),
     systemPrompt: profile.systemPrompt ?? '',
     readOnly: profile.readOnly ?? false,
-    allTools: tools.includes('*'),
-    tools: tools.filter((t) => t !== '*')
+    allTools: isWildcard,
+    tools: explicitTools,
+    source: { ...profile }
   }
 }
 
@@ -80,7 +83,13 @@ function cloneId(base: string, taken: Set<string>): string {
 }
 
 function draftToProfile(draft: Draft): AgentProfile {
+  const base = draft.source ? { ...draft.source } : {}
+  delete (base as Record<string, unknown>).builtin
+  delete (base as Record<string, unknown>).createdAt
+  delete (base as Record<string, unknown>).updatedAt
+
   const profile: AgentProfile = {
+    ...base,
     id: draft.id.trim(),
     name: draft.name.trim(),
     provider: draft.provider,
@@ -88,18 +97,32 @@ function draftToProfile(draft: Draft): AgentProfile {
   }
   const description = draft.description.trim()
   if (description) profile.description = description
+  else delete profile.description
+
   const temperature = parseNum(draft.temperature)
   if (temperature !== undefined) profile.temperature = temperature
+  else delete profile.temperature
+
   const maxTokens = parseNum(draft.maxTokens)
   if (maxTokens !== undefined) profile.maxTokens = maxTokens
+  else delete profile.maxTokens
+
   const maxTurns = parseNum(draft.maxTurns)
   if (maxTurns !== undefined) profile.maxTurns = maxTurns
+  else delete profile.maxTurns
+
   const tokenBudget = parseNum(draft.tokenBudget)
   if (tokenBudget !== undefined) profile.tokenBudget = tokenBudget
+  else delete profile.tokenBudget
+
   const systemPrompt = draft.systemPrompt.trim()
   if (systemPrompt) profile.systemPrompt = systemPrompt
+  else delete profile.systemPrompt
+
   if (draft.readOnly) profile.readOnly = true
-  profile.tools = draft.allTools ? ['*'] : draft.tools.length > 0 ? draft.tools : undefined
+  else delete profile.readOnly
+
+  profile.tools = draft.allTools ? ['*'] : [...draft.tools]
   return profile
 }
 
@@ -146,6 +169,7 @@ export function HarnessPanel({ compact = false }: { compact?: boolean }): JSX.El
   const [runProfileId, setRunProfileId] = useState('')
   const [task, setTask] = useState('')
   const [starting, setStarting] = useState(false)
+  const [monitorFollowing, setMonitorFollowing] = useState(true)
 
   const monitorRef = useRef<HTMLDivElement | null>(null)
 
@@ -186,11 +210,21 @@ export function HarnessPanel({ compact = false }: { compact?: boolean }): JSX.El
     return out
   }, [runEvents, activeRunId])
 
-  /* keep the stream pinned to the bottom while it grows */
+  /* Follow new output only while the user remains near the bottom. */
   useEffect(() => {
     const el = monitorRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [entries])
+    if (el && monitorFollowing) el.scrollTop = el.scrollHeight
+  }, [entries, monitorFollowing])
+
+  useEffect(() => {
+    setMonitorFollowing(true)
+  }, [activeRunId])
+
+  const onMonitorScroll = (): void => {
+    const el = monitorRef.current
+    if (!el) return
+    setMonitorFollowing(el.scrollHeight - el.scrollTop - el.clientHeight < 48)
+  }
 
   const patchDraft = (patch: Partial<Draft>): void => {
     setDraft((prev) => (prev === null ? prev : { ...prev, ...patch }))
@@ -204,14 +238,28 @@ export function HarnessPanel({ compact = false }: { compact?: boolean }): JSX.El
   const cloneDraft = (): void => {
     if (draft === null) return
     const taken = new Set(profiles.map((p) => p.id))
-    setDraft({ ...draft, id: cloneId(draft.id, taken), name: `${draft.name} (copy)` })
+    const newId = cloneId(draft.id, taken)
+    const newName = `${draft.name} (copy)`
+    setDraft({
+      ...draft,
+      id: newId,
+      name: newName,
+      source: draft.source ? { ...draft.source, id: newId, name: newName } : undefined
+    })
     setDraftLocked(false)
   }
 
   const cloneProfile = (profile: AgentProfile): void => {
     const taken = new Set(profiles.map((p) => p.id))
     const base = draftFrom(profile)
-    setDraft({ ...base, id: cloneId(profile.id, taken), name: `${profile.name} (copy)` })
+    const newId = cloneId(profile.id, taken)
+    const newName = `${profile.name} (copy)`
+    setDraft({
+      ...base,
+      id: newId,
+      name: newName,
+      source: { ...profile, id: newId, name: newName }
+    })
     setDraftLocked(false)
   }
 
@@ -628,7 +676,8 @@ export function HarnessPanel({ compact = false }: { compact?: boolean }): JSX.El
             </div>
           </div>
 
-          <div className="harness__monitor" ref={monitorRef}>
+          <div className="harness__monitor-wrap">
+            <div className="harness__monitor" ref={monitorRef} onScroll={onMonitorScroll}>
             {activeRunId === null ? (
               <p className="harness__muted">No run yet — pick a profile and start one.</p>
             ) : entries.length === 0 ? (
@@ -707,6 +756,20 @@ export function HarnessPanel({ compact = false }: { compact?: boolean }): JSX.El
                   </div>
                 )
               })
+            )}
+            </div>
+            {!monitorFollowing && entries.length > 0 && (
+              <button
+                type="button"
+                className="harness__monitor-latest"
+                onClick={() => {
+                  setMonitorFollowing(true)
+                  const el = monitorRef.current
+                  if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+                }}
+              >
+                Jump to latest <span aria-hidden="true">↓</span>
+              </button>
             )}
           </div>
         </section>

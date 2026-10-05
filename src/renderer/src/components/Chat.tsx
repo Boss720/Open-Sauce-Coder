@@ -62,6 +62,22 @@ export function Chat(): ReactNode {
   const error = useStore((state) => state.error)
   const directory = useStore((state) => state.directory)
   const activeSessionID = useStore((state) => state.activeSessionID)
+  const activeSession = useStore((state) =>
+    state.sessions.find((session) => session.id === state.activeSessionID) ?? null
+  )
+  const sessions = useStore((state) => state.sessions)
+  const configuredAgents = useStore((state) => state.agents)
+  const activeAgent = useStore((state) =>
+    state.activeSessionID ? state.sessionAgents[state.activeSessionID] : undefined
+  )
+  const sessionReadOnly = useStore((state) =>
+    state.activeSessionID ? state.sessionReadOnly[state.activeSessionID] === true : false
+  )
+  const subagentBusy = useStore((state) => state.subagentBusy)
+  const branch = useStore((state) => state.branch)
+  const routingMode = useStore((state) => state.routingMode)
+  const setPanelTab = useStore((state) => state.setPanelTab)
+  const setActiveView = useStore((state) => state.setActiveView)
   const providerID = useStore((state) => state.providerID)
   const modelID = useStore((state) => state.modelID)
   const dismissError = useStore((state) => state.dismissError)
@@ -261,9 +277,34 @@ export function Chat(): ReactNode {
 
   const showEmptySession = activeSessionID !== null && messages.length === 0
   const hideTools = shouldHideTools(viewMode)
+  const taskTitle = activeSession?.title?.trim() || (activeSessionID ? 'New task' : 'Start a task')
+  const childSessions = activeSessionID
+    ? sessions.filter((session) => session.parentID === activeSessionID)
+    : []
+  const activeAgentProfile = configuredAgents.find((agent) => agent.name === activeAgent)
+  const coordinatorRoute = activeAgentProfile?.model
+    ? `${activeAgentProfile.model.providerID}/${activeAgentProfile.model.modelID}`
+    : providerID && modelID
+      ? `${providerID}/${modelID}`
+      : 'No model selected'
 
   return (
     <section className="chat">
+      <header className="chat__task-head">
+        <div className="chat__task-title-wrap">
+          <div className="chat__eyebrow">Task / {folderName(directory ?? 'Workspace')}</div>
+          <h1 className="chat__task-title">{taskTitle}</h1>
+        </div>
+        <button
+          type="button"
+          className="chat__review-button"
+          onClick={() => setPanelTab('changes')}
+          title="Review changed files in this workspace"
+          disabled={directory === null}
+        >
+          Review changes
+        </button>
+      </header>
       {messages.length > 0 && (
         <div className="chat__header-actions">
           <div
@@ -548,6 +589,78 @@ export function Chat(): ReactNode {
             and shows its own notice bar with a stop control instead. */}
         {viewingSubagent ? null : <Composer />}
       </div>
+
+      {activeSessionID && (
+        <details className="chat__task-context">
+          <summary className="chat__task-context-summary">
+            <span className="chat__task-context-label">This task</span>
+            <strong className="chat__task-context-title">{taskTitle}</strong>
+            <span className="chat__task-context-team">
+              Team · {childSessions.length > 0
+                ? `${childSessions.length} run${childSessions.length === 1 ? '' : 's'}`
+                : activeAgent ?? 'Coordinator'}
+            </span>
+            <span className="chat__task-context-chevron" aria-hidden="true">›</span>
+          </summary>
+          <div className="chat__task-context-body">
+            <section className="chat__task-outcome" aria-label="Task context">
+              <span className="chat__eyebrow">Workspace</span>
+              <strong>{taskTitle}</strong>
+              <p title={directory ?? undefined}>{directory ?? 'No workspace selected'}</p>
+              <div className="chat__context-tags">
+                <span>{branch ? `Branch · ${branch}` : 'Branch · not detected'}</span>
+                <span>{sessionReadOnly ? 'Read only' : 'Read/write session'}</span>
+                <span>{routingMode === 'locked' ? 'Pinned route' : 'Automatic routing'}</span>
+              </div>
+            </section>
+            <section className="chat__team" aria-label="Task team and agents">
+              <div className="chat__team-head">
+                <div>
+                  <span className="chat__eyebrow">Team</span>
+                  <strong>{configuredAgents.length > 0 ? 'Available agents' : 'Coordinator'}</strong>
+                </div>
+                <button type="button" onClick={() => setActiveView('harness')}>Manage agents</button>
+              </div>
+              <div className="chat__team-grid">
+                <div className="chat__team-member">
+                  <span className="chat__team-avatar">{(activeAgent ?? 'C').slice(0, 1).toUpperCase()}</span>
+                  <span><strong>{activeAgent ?? 'Coordinator'}</strong><small>{coordinatorRoute} · {sessionReadOnly ? 'read only' : 'project rules'}</small></span>
+                </div>
+                {configuredAgents.filter((agent) => agent.name !== activeAgent).slice(0, 4).map((agent) => {
+                  const access = agent.permission.edit === 'deny'
+                    ? 'no edits'
+                    : agent.permission.edit === 'ask'
+                      ? 'ask to edit'
+                      : 'edits allowed'
+                  const model = agent.model
+                    ? `${agent.model.providerID}/${agent.model.modelID}`
+                    : `${agent.mode} agent`
+                  return (
+                    <div className="chat__team-member" key={agent.name}>
+                      <span className="chat__team-avatar">{agent.name.slice(0, 1).toUpperCase()}</span>
+                      <span><strong>{agent.name}</strong><small>{model} · {access}</small></span>
+                    </div>
+                  )
+                })}
+                {childSessions.map((session) => (
+                  <button
+                    className="chat__team-member chat__team-member--child"
+                    type="button"
+                    key={session.id}
+                    onClick={() => {
+                      setActiveView('chats')
+                      void useStore.getState().openSubagentTab(session.id)
+                    }}
+                  >
+                    <span className="chat__team-avatar">{(session.title || 'A').slice(0, 1).toUpperCase()}</span>
+                    <span><strong>{session.title || 'Subagent'}</strong><small>{subagentBusy[session.id] ? 'Working' : 'Open run'}</small></span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          </div>
+        </details>
+      )}
 
       <ChatSearch open={searchOpen} onClose={() => setSearchOpen(false)} />
     </section>

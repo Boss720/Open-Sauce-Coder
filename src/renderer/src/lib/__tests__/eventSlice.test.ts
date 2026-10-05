@@ -990,5 +990,21 @@ describe('eventSlice: applyEvent', () => {
       expect(refreshGit).toHaveBeenCalledTimes(1)
       expect(refreshTree).toHaveBeenCalledTimes(1)
     })
+
+    it('session.created inherits sessionReadOnly when parent session is read-only', () => {
+      const { get, slice } = setup({
+        directory: '/proj',
+        sessionReadOnly: { 'parent-1': true }
+      })
+
+      slice.applyEvent(
+        ev('session.created', {
+          info: { id: 'child-1', parentID: 'parent-1', directory: '/proj' }
+        })
+      )
+
+      expect(get().sessionReadOnly?.['child-1']).toBe(true)
+      expect(get().sessions.some((s) => s.id === 'child-1')).toBe(true)
+    })
   })
 })

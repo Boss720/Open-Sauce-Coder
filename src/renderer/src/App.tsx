@@ -59,6 +59,11 @@ function clampWidth(n: number): number {
   return Math.min(MAX_W, Math.max(MIN_W, Math.round(n)))
 }
 
+function workspaceName(path: string | null): string {
+  if (!path) return 'Choose a project'
+  return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path
+}
+
 function readStoredWidth(): number {
   try {
     const raw = window.localStorage.getItem(SIDEBAR_KEY)
@@ -125,6 +130,7 @@ export function App(): JSX.Element {
   const error = useStore((s) => s.error)
   const dismissError = useStore((s) => s.dismissError)
   const theme = useStore((s) => s.theme)
+  const directory = useStore((s) => s.directory)
   const activeArtifactID = useStore((s) => s.activeArtifactID)
   const activeView = useStore((s) => s.activeView)
   const panelTab = useStore((s) => s.panelTab)
@@ -374,6 +380,26 @@ export function App(): JSX.Element {
       className={panelOpen ? 'app app--panel' : 'app'}
       style={{ '--sidebar-w': `${width}px` } as CSSProperties}
     >
+      <header className="app__topbar">
+        <div className="app__topbar-brand">
+          <span className="app__brand-mark" aria-hidden="true">›_</span>
+          <span className="app__brand-name">OpenCode</span>
+        </div>
+        <button
+          type="button"
+          className="app__topbar-workspace"
+          onClick={() => void useStore.getState().pickDirectory()}
+          title={directory ?? 'Choose a project folder'}
+        >
+          <span>Workspace</span>
+          <span className="app__topbar-divider">/</span>
+          <strong>{workspaceName(directory)}</strong>
+        </button>
+        <div className="app__topbar-actions">
+          <span className="app__design-label">Copper Focus</span>
+        </div>
+      </header>
+
       <div className="app__sidebar">
         <Sidebar onOpenLiveScreen={() => { void window.api.liveWindow.open() }} />
       </div>

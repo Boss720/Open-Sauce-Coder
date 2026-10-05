@@ -2,7 +2,8 @@
  * Free-tier model registry — curated ranked list, identity predicate, sub-pools.
  *
  * Pure data module, no store/React imports.
- * Source: models.dev + provider docs, verified 2026-07-22.
+ * Source: provider model docs and the supplied Google AI Studio quota snapshot
+ * (2026-10-05). Quotas are local estimates; actual limits vary by account/project.
  */
 
 import type { ModelCapsMap } from './routing'
@@ -25,31 +26,34 @@ export interface FreeTierEntry {
 }
 
 export const FREE_MODEL_TIERS: readonly FreeTierEntry[] = [
-  // S-tier — best free agentic. NOTE the RPD: 20/day is the real Flash allowance,
-  // which an agentic session can exhaust in a single task. Flash-Lite below carries
-  // 500/day and is the model to fall back to, not another Flash.
-  { providerID: 'google', modelID: 'gemini-3.6-flash', tier: 'S', rpm: 5, rpd: 20, note: 'best free agentic; only 20/day, resets midnight PT' },
-  { providerID: 'google', modelID: 'gemini-3.5-flash', tier: 'S', rpm: 5, rpd: 20, note: 'strong; 20/day' },
-  { providerID: 'google', modelID: 'gemini-3-flash', tier: 'S', rpm: 5, rpd: 20, note: '20/day; model ID inferred from the AI Studio dashboard label' },
+  // S-tier — Google describes 3.8 Flash for long-horizon software engineering and agents.
+  // Full Flash models in the supplied account snapshot each have a 20/day quota.
+  { providerID: 'google', modelID: 'gemini-3.8-flash', tier: 'S', rpm: 5, rpd: 20, note: 'current coding-focused Flash; 20/day' },
+  { providerID: 'google', modelID: 'gemini-3.7-flash', tier: 'A', rpm: 5, rpd: 20, note: 'agent-capable Flash; 20/day' },
+  { providerID: 'google', modelID: 'gemini-3.6-flash', tier: 'A', rpm: 5, rpd: 20, note: 'agent-capable Flash; 20/day' },
+  { providerID: 'google', modelID: 'gemini-3.5-flash', tier: 'A', rpm: 5, rpd: 20, note: 'agent-capable Flash; 20/day' },
+  { providerID: 'google', modelID: 'gemini-3-flash-preview', tier: 'B', rpm: 5, rpd: 20, note: 'preview model; exact API ID verified' },
 
   // A-tier — strong alternatives
   { providerID: 'groq', modelID: 'openai/gpt-oss-120b', tier: 'A', rpm: 30, rpd: 1000, note: '8K TPM bottleneck; no parallel tool calls' },
   { providerID: 'cerebras', modelID: 'gpt-oss-120b', tier: 'A', rpm: 30, rpd: 14400, note: 'generous RPD but 1M tokens/day is the real ceiling' },
   { providerID: 'mistral', modelID: 'devstral-latest', tier: 'A', rpm: 2, rpd: null, note: 'purpose-built agentic coding; RPM unpublished, see OPAQUE_RPM_PROVIDERS' },
   { providerID: 'mistral', modelID: 'mistral-medium-latest', tier: 'A', rpm: 2, rpd: null, note: 'frontier general/agentic; RPM unpublished' },
+  { providerID: 'google', modelID: 'gemma-4-31b-it', tier: 'A', rpm: 30, rpd: 14400, note: 'tool-capable alternative; 16K input TPM' },
 
   // B-tier — stable fallbacks
   { providerID: 'groq', modelID: 'llama-3.3-70b-versatile', tier: 'B', rpm: 30, rpd: 1000, note: '12K TPM, parallel tools' },
-  { providerID: 'google', modelID: 'gemini-2.5-flash', tier: 'B', rpm: 5, rpd: 20, note: 'stable fallback; 20/day' },
+  { providerID: 'google', modelID: 'gemini-2.5-flash', tier: 'B', rpm: 5, rpd: 20, note: 'access may be restricted; 20/day observed' },
   // 500/day — 25x any Flash. The highest-throughput free Google models by a wide
   // margin, so they carry the long sessions once Flash's 20 are gone.
-  { providerID: 'google', modelID: 'gemini-3.5-flash-lite', tier: 'B', rpm: 15, rpd: 500, note: '500/day; the real Google workhorse' },
-  { providerID: 'google', modelID: 'gemini-3.1-flash-lite', tier: 'B', rpm: 15, rpd: 500, note: '500/day' },
+  { providerID: 'google', modelID: 'gemini-3.5-flash-lite', tier: 'B', rpm: 15, rpd: 500, note: 'high-throughput fallback; 500/day' },
+  { providerID: 'google', modelID: 'gemini-3.1-flash-lite', tier: 'B', rpm: 15, rpd: 500, note: 'stable high-throughput fallback; 500/day' },
+  { providerID: 'google', modelID: 'gemma-4-26b-a4b-it', tier: 'B', rpm: 30, rpd: 14400, note: 'high-volume alternative; 16K input TPM' },
   { providerID: 'mistral', modelID: 'ministral-8b-latest', tier: 'B', rpm: 2, rpd: null, note: 'routine steps; RPM unpublished' },
 
   // C-tier — subtasks / chores only
   { providerID: 'groq', modelID: 'llama-3.1-8b-instant', tier: 'C', rpm: 30, rpd: 14400, note: 'subtasks only; most permissive Groq RPD' },
-  { providerID: 'google', modelID: 'gemini-2.5-flash-lite', tier: 'C', rpm: 10, rpd: 20, note: 'only 20/day despite being Lite — not a high-volume option' },
+  { providerID: 'google', modelID: 'gemini-2.5-flash-lite', tier: 'C', rpm: 10, rpd: 20, note: '10 rpm and 20/day in the supplied snapshot' },
   { providerID: 'openrouter', modelID: 'nvidia/nemotron-nano-9b-v2:free', tier: 'C', rpm: 20, rpd: 50, note: '50/day account-wide; 1000 after a lifetime $10 credit purchase' },
   { providerID: 'cohere', modelID: 'command-r7b-12-2024', tier: 'C', rpm: 20, rpd: 33, note: 'trial only; not re-verified 2026-07-29' },
 ] as const
@@ -195,13 +199,12 @@ export const OPAQUE_RPM_PROVIDERS: ReadonlySet<string> = new Set(['mistral'])
  *   - a `providerID` entry counts every send to that provider, because the limit is
  *     account-wide (OpenRouter's 50/day spans all free models)
  *
- * Google's numbers come from the account's own AI Studio → Rate Limit dashboard
- * (read 2026-07-29), which supersedes published documentation: the docs describe
- * 10 RPM / 250 RPD for Flash, the dashboard shows 5 RPM / 20 RPD / 250K TPM. Free
- * quotas are per project and vary by account, so the observed values win.
+ * Google's values below use the account's AI Studio Rate Limit screenshot (2026-10-05).
+ * The numerator is peak use over the preceding 28 days; only each denominator is a
+ * configured limit. Google's official docs say active limits vary by project/tier.
  *
- * The 20/day Flash allowance is small enough that TPM, not RPM, is what a coding
- * session actually hits — hence `tpm` here and token accounting in the ledger.
+ * Google documents TPM as input tokens/minute, so Google entries explicitly count
+ * input tokens. Other providers keep the router's total-token estimate unless stated.
  *
  * Daily windows: Google resets at midnight Pacific, so its entries say so rather than
  * relying on a rolling 24h window that would lock a model out for hours after the real
@@ -223,24 +226,26 @@ export const FREE_PROVIDER_CAPS: ModelCapsMap = {
   // Per-provider floors for models not named below. Deliberately the STRICTEST
   // Google tier: an unrecognised model ID must be assumed to carry the 20/day Flash
   // allowance, never the 500/day Flash-Lite one. Specific entries raise it.
-  google: { rpm: 5, rpd: 20, tpm: 250_000, rpdWindow: 'day-pt' },
+  google: { rpm: 5, rpd: 20, tpm: 250_000, tpmTokens: 'input', rpdWindow: 'day-pt' },
   groq: { rpm: 30, rpd: 1000 },
   cerebras: { rpm: 30, rpd: 14400 },
 
-  // Per-model entries — these are where the real limits live.
-  // Google Flash class: 5 rpm / 250K tpm / 20 rpd.
-  'google/gemini-3.6-flash': { rpm: 5, rpd: 20, tpm: 250_000, rpdWindow: 'day-pt' },
-  'google/gemini-3.5-flash': { rpm: 5, rpd: 20, tpm: 250_000, rpdWindow: 'day-pt' },
-  'google/gemini-3-flash': { rpm: 5, rpd: 20, tpm: 250_000, rpdWindow: 'day-pt' },
-  'google/gemini-2.5-flash': { rpm: 5, rpd: 20, tpm: 250_000, rpdWindow: 'day-pt' },
+  // Per-model entries — Google quotas are project/model-specific in the screenshot.
+  // Flash class: 5 rpm / 250K input tpm / 20 rpd.
+  'google/gemini-3.8-flash': { rpm: 5, rpd: 20, tpm: 250_000, tpmTokens: 'input', rpdWindow: 'day-pt' },
+  'google/gemini-3.7-flash': { rpm: 5, rpd: 20, tpm: 250_000, tpmTokens: 'input', rpdWindow: 'day-pt' },
+  'google/gemini-3.6-flash': { rpm: 5, rpd: 20, tpm: 250_000, tpmTokens: 'input', rpdWindow: 'day-pt' },
+  'google/gemini-3.5-flash': { rpm: 5, rpd: 20, tpm: 250_000, tpmTokens: 'input', rpdWindow: 'day-pt' },
+  'google/gemini-3-flash-preview': { rpm: 5, rpd: 20, tpm: 250_000, tpmTokens: 'input', rpdWindow: 'day-pt' },
+  'google/gemini-2.5-flash': { rpm: 5, rpd: 20, tpm: 250_000, tpmTokens: 'input', rpdWindow: 'day-pt' },
   // Flash-Lite 3.x: 15 rpm / 500 rpd. 2.5 Flash-Lite is NOT in this club — it gets
   // 10 rpm / 20 rpd, so it must not inherit the 3.x numbers by name similarity.
-  'google/gemini-3.5-flash-lite': { rpm: 15, rpd: 500, tpm: 250_000, rpdWindow: 'day-pt' },
-  'google/gemini-3.1-flash-lite': { rpm: 15, rpd: 500, tpm: 250_000, rpdWindow: 'day-pt' },
-  'google/gemini-2.5-flash-lite': { rpm: 10, rpd: 20, tpm: 250_000, rpdWindow: 'day-pt' },
-  // Gemma: tiny TPM (16K) but a huge 14.4K daily allowance.
-  'google/gemma-4-26b': { rpm: 30, rpd: 14400, tpm: 16_000, rpdWindow: 'day-pt' },
-  'google/gemma-4-31b': { rpm: 30, rpd: 14400, tpm: 16_000, rpdWindow: 'day-pt' },
+  'google/gemini-3.5-flash-lite': { rpm: 15, rpd: 500, tpm: 250_000, tpmTokens: 'input', rpdWindow: 'day-pt' },
+  'google/gemini-3.1-flash-lite': { rpm: 15, rpd: 500, tpm: 250_000, tpmTokens: 'input', rpdWindow: 'day-pt' },
+  'google/gemini-2.5-flash-lite': { rpm: 10, rpd: 20, tpm: 250_000, tpmTokens: 'input', rpdWindow: 'day-pt' },
+  // Gemma 4: 30 rpm / 16K input tpm / 14.4K rpd in the screenshot.
+  'google/gemma-4-26b-a4b-it': { rpm: 30, rpd: 14_400, tpm: 16_000, tpmTokens: 'input', rpdWindow: 'day-pt' },
+  'google/gemma-4-31b-it': { rpm: 30, rpd: 14_400, tpm: 16_000, tpmTokens: 'input', rpdWindow: 'day-pt' },
 
   'groq/openai/gpt-oss-120b': { rpm: 30, rpd: 1000, tpm: 8_000 },
   'groq/llama-3.3-70b-versatile': { rpm: 30, rpd: 1000, tpm: 12_000 },

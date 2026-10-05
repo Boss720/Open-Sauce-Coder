@@ -1,9 +1,14 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   capsFor,
+  currentRateUsage,
+  LEDGER_STORAGE_KEY,
+  loadLedger,
   nextAvailableAt,
   record429,
+  recordInputTokens,
   recordTokens,
+  reserveAttempt,
   rpdWindowEnd,
   rpdWindowStart,
   underRateCaps,
@@ -180,7 +185,7 @@ describe('record429 daily parking', () => {
       daily: true,
       caps: { mistral: { rpd: 2 } }
     })
-    expect(updated['mistral/x'].cooldownUntil).toBe(now - 6 * HOUR + DAY)
+    expect(updated['mistral/x'].cooldownUntil).toBe(now - 6 * HOUR + DAY + 1)
   })
 
   it('still caps a plain rpm wait at 120s', () => {
@@ -198,7 +203,7 @@ describe('nextAvailableAt', () => {
     const ledger: Ledger = { 'google/x': health([oldest, now - 10_000]) }
     expect(nextAvailableAt(['google/x'], ledger, caps, now)).toEqual({
       key: 'google/x',
-      at: oldest + 60_000
+      at: oldest + 60_001
     })
   })
 
@@ -218,6 +223,18 @@ describe('nextAvailableAt', () => {
 
   it('returns null for an empty pool', () => {
     expect(nextAvailableAt([], {}, {}, now)).toBeNull()
+  })
+
+  it('returns null for a permanently zero quota instead of a misleading retry time', () => {
+    expect(nextAvailableAt(['google/unavailable'], {}, { 'google/unavailable': { rpd: 0 } }, now)).toBeNull()
+    expect(nextAvailableAt(['google/unavailable'], {}, { 'google/unavailable': { rpm: 0 } }, now)).toBeNull()
+  })
+
+  it('includes burst-window expiration in recovery estimates', () => {
+    const caps: ModelCapsMap = { nanogpt: { burst: { count: 2, windowMs: 10_000 } } }
+    const oldest = now - 8_000
+    const ledger: Ledger = { 'nanogpt/a': health([oldest, now - 1000]) }
+    expect(nextAvailableAt(['nanogpt/a'], ledger, caps, now)).toEqual({ key: 'nanogpt/a', at: oldest + 10_001 })
   })
 })
 
@@ -263,7 +280,25 @@ describe('TPM accounting', () => {
     ledger = recordTokens(ledger, 'google/x', 40, now - 5_000)
     expect(nextAvailableAt(['google/x'], ledger, caps, now)).toEqual({
       key: 'google/x',
-      at: oldest + 60_000
+      at: oldest + 60_001
+    })
+  })
+
+  it('uses input-only token events when the cap is documented as input TPM', () => {
+    const caps: ModelCapsMap = { 'google/x': { tpm: 100, tpmTokens: 'input' } }
+    let ledger: Ledger = {}
+    ledger = recordTokens(ledger, 'google/x', 150, now - 1000)
+    expect(underRateCaps(ledger, 'google/x', caps, now)).toBe(true)
+    ledger = recordInputTokens(ledger, 'google/x', 100, now - 1000)
+    expect(underRateCaps(ledger, 'google/x', caps, now)).toBe(false)
+    expect(currentRateUsage(ledger, 'google/x', caps, now)?.tokensPerMinute).toBe(100)
+  })
+
+  it('reports local RPM, RPD, burst, token use, and configured scope together', () => {
+    const caps: ModelCapsMap = { nanogpt: { rpm: 4, rpd: 10, burst: { count: 2, windowMs: 10_000 } } }
+    const ledger: Ledger = { 'nanogpt/a': health([now - 5000, now - 1000]) }
+    expect(currentRateUsage(ledger, 'nanogpt/a', caps, now)).toMatchObject({
+      scope: 'provider', requestsPerMinute: 2, requestsPerDay: 2, burstRequests: 2, tokensPerMinute: 0
     })
   })
 
@@ -276,26 +311,34 @@ describe('TPM accounting', () => {
 })
 
 describe("Google caps match the account's AI Studio dashboard, not the public docs", () => {
-  // Read from AI Studio → Rate Limit on 2026-07-29. Published docs say 10 rpm / 250 rpd
-  // for Flash; this account gets 5 / 20. These assertions exist so a future edit back to
-  // the documented numbers fails loudly instead of silently over-sending 12x.
+  // Denominators from the supplied AI Studio snapshot on 2026-10-05. The values are
+  // account-specific; screenshot numerators show 28-day peak use, not current usage.
   const expected: Record<string, { rpm: number; rpd: number; tpm: number }> = {
     'google/gemini-3.6-flash': { rpm: 5, rpd: 20, tpm: 250_000 },
+    'google/gemini-3.8-flash': { rpm: 5, rpd: 20, tpm: 250_000 },
+    'google/gemini-3.7-flash': { rpm: 5, rpd: 20, tpm: 250_000 },
     'google/gemini-3.5-flash': { rpm: 5, rpd: 20, tpm: 250_000 },
+    'google/gemini-3-flash-preview': { rpm: 5, rpd: 20, tpm: 250_000 },
     'google/gemini-2.5-flash': { rpm: 5, rpd: 20, tpm: 250_000 },
     'google/gemini-3.5-flash-lite': { rpm: 15, rpd: 500, tpm: 250_000 },
     'google/gemini-3.1-flash-lite': { rpm: 15, rpd: 500, tpm: 250_000 },
     'google/gemini-2.5-flash-lite': { rpm: 10, rpd: 20, tpm: 250_000 },
-    'google/gemma-4-26b': { rpm: 30, rpd: 14400, tpm: 16_000 }
+    'google/gemma-4-26b-a4b-it': { rpm: 30, rpd: 14400, tpm: 16_000 },
+    'google/gemma-4-31b-it': { rpm: 30, rpd: 14400, tpm: 16_000 }
   }
 
   for (const [key, want] of Object.entries(expected)) {
     it(`${key} is ${want.rpm} rpm / ${want.rpd} rpd / ${want.tpm} tpm`, () => {
       const resolved = capsFor(FREE_PROVIDER_CAPS, key)
       expect(resolved?.scope).toBe('model')
-      expect(resolved?.caps).toEqual({ ...want, rpdWindow: 'day-pt' })
+      expect(resolved?.caps).toEqual({ ...want, tpmTokens: 'input', rpdWindow: 'day-pt' })
     })
   }
+
+  it('does not match the old incorrect Gemma aliases', () => {
+    expect(capsFor(FREE_PROVIDER_CAPS, 'google/gemma-4-26b')?.scope).toBe('provider')
+    expect(capsFor(FREE_PROVIDER_CAPS, 'google/gemma-4-31b')?.scope).toBe('provider')
+  })
 
   it('falls back to the strictest Google tier for an unrecognised model', () => {
     // A new Flash-Lite the registry has not learned about yet must NOT inherit 500/day.
@@ -336,5 +379,32 @@ describe('FREE_PROVIDER_CAPS is the single source of truth', () => {
       const resolved = capsFor(FREE_PROVIDER_CAPS, `${entry.providerID}/${entry.modelID}`)
       expect(resolved!.caps.rpdWindow).toBe('day-pt')
     }
+  })
+})
+
+describe('25-hour Pacific day ledger retention', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('keeps a send older than 24 hours so a 25-hour quota day is still counted', () => {
+    const now = Date.UTC(2026, 10, 2, 7, 30)
+    const send = Date.UTC(2026, 10, 1, 7, 1) // 24h29m old during the 25-hour DST day
+    const oldHealth = health([send])
+    expect(reserveAttempt({ 'google/x': oldHealth }, 'google/x', now)['google/x'].sends).toEqual([send, now])
+
+    vi.useFakeTimers()
+    vi.setSystemTime(now)
+    const data: Record<string, string> = {
+      [LEDGER_STORAGE_KEY]: JSON.stringify({ 'google/x': oldHealth })
+    }
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => data[key] ?? null,
+      setItem: (key: string, value: string) => { data[key] = value },
+      removeItem: (key: string) => { delete data[key] },
+      clear: () => { for (const key of Object.keys(data)) delete data[key] }
+    })
+    expect(loadLedger()['google/x'].sends).toContain(send)
   })
 })

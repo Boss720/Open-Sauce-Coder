@@ -8,6 +8,10 @@ import type { PromptPart } from '../lib/types'
 import { MentionMenu } from './MentionMenu'
 import { ModelPicker } from './ModelPicker'
 import { FILE_TREE_DRAG_MIME } from './FileTree'
+import { selectModelDetailed, getCostTier, type ModelSelectionExplanation } from '../lib/routing'
+import { FREE_PROVIDER_CAPS, isFreeModel } from '../lib/freeTier'
+import { getLedger } from '../lib/slices/attemptMachine'
+import { isAgentModel } from '../lib/models'
 import './composer.css'
 
 const MAX_HEIGHT_RATIO = 0.4
@@ -41,6 +45,12 @@ export function Composer(): ReactNode {
     [agents]
   )
 
+  const providers = useStore((state) => state.providers)
+  const linkedProviderIDs = useStore((state) => state.linkedProviderIDs)
+  const modelPool = useStore((state) => state.modelPool)
+  const routingMode = useStore((state) => state.routingMode)
+  const showPaidModels = useStore((state) => state.showPaidModels)
+
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
   const [slashIndex, setSlashIndex] = useState(0)
@@ -50,7 +60,49 @@ export function Composer(): ReactNode {
   const [mentionFiles, setMentionFiles] = useState<string[]>([])
   const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0)
   const [isDragging, setIsDragging] = useState(false)
+  const [showWhyModel, setShowWhyModel] = useState(false)
   const areaRef = useRef<HTMLTextAreaElement | null>(null)
+  const whyModelRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (!showWhyModel) return
+    const handleClickOutside = (e: MouseEvent): void => {
+      if (whyModelRef.current && !whyModelRef.current.contains(e.target as Node)) {
+        setShowWhyModel(false)
+      }
+    }
+    const handleKeyDown = (e: globalThis.KeyboardEvent): void => {
+      if (e.key === 'Escape') {
+        setShowWhyModel(false)
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [showWhyModel])
+
+  const explanation = useMemo<ModelSelectionExplanation | null>(() => {
+    if (!providers || providers.length === 0) return null
+    const available = new Set<string>()
+    for (const p of providers) {
+      if (!linkedProviderIDs.includes(p.id)) continue
+      for (const m of Object.values(p.models ?? {}) as Array<{ id: string }>) {
+        if (isAgentModel(m as any) && (showPaidModels || isFreeModel(p.id, m.id))) {
+          available.add(`${p.id}/${m.id}`)
+        }
+      }
+    }
+    const currentKey = providerID && modelID ? `${providerID}/${modelID}` : null
+    return selectModelDetailed(modelPool, getLedger(), FREE_PROVIDER_CAPS, Date.now(), {
+      sticky: routingMode !== 'auto',
+      current: currentKey,
+      available,
+      authenticatedProviders: new Set(linkedProviderIDs)
+    })
+  }, [providers, linkedProviderIDs, modelPool, routingMode, showPaidModels, providerID, modelID])
 
   // Fetches the file list backing the @mention menu. This used to live inside
   // MentionMenu itself, but the menu's open/closed and selection state now has
@@ -528,6 +580,17 @@ export function Composer(): ReactNode {
               📎
             </button>
             <ModelPicker compact />
+            <button
+              type="button"
+              className={`composer__why-model${showWhyModel ? ' composer__why-model--active' : ''}`}
+              onClick={() => setShowWhyModel((prev) => !prev)}
+              title="Why this model? (Explainable routing details)"
+              aria-expanded={showWhyModel}
+              aria-label="Explain model selection"
+            >
+              <span className="composer__why-model-icon" aria-hidden="true">💡</span>
+              <span className="composer__why-model-label">Why this model?</span>
+            </button>
             {activeSessionID && primaryAgents.length > 0 && (
               <select
                 className={`composer__agent${activeAgent ? ' composer__agent--active' : ''}`}
@@ -600,6 +663,74 @@ export function Composer(): ReactNode {
           )}
           </div>
         </div>
+
+        {showWhyModel && explanation && (
+          <div className="composer__routing-inspector" ref={whyModelRef} role="dialog" aria-label="Model routing explanation">
+            <div className="composer__routing-header">
+              <div className="composer__routing-title-group">
+                <span className="composer__routing-title">Model Routing Rationale</span>
+                <span className="composer__routing-subtitle">Balanced quality, cost & health breakdown</span>
+              </div>
+              <button
+                type="button"
+                className="composer__routing-close"
+                onClick={() => setShowWhyModel(false)}
+                aria-label="Close routing rationale"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="composer__routing-summary">
+              <div className="composer__routing-pick">
+                <span className="composer__routing-pick-label">Current Choice:</span>
+                <span className="composer__routing-pick-name">{explanation.selected ?? 'None'}</span>
+                {explanation.selected && (
+                  <span className={`composer__cost-badge composer__cost-badge--${getCostTier(explanation.selected)}`}>
+                    {getCostTier(explanation.selected)}
+                  </span>
+                )}
+              </div>
+              <p className="composer__routing-reason">{explanation.reason}</p>
+            </div>
+
+            <div className="composer__routing-candidates">
+              <div className="composer__routing-table-header">
+                <span>Candidate</span>
+                <span>Quality</span>
+                <span>Latency</span>
+                <span>Tier</span>
+                <span>Status</span>
+              </div>
+              <div className="composer__routing-table-body">
+                {explanation.candidates.map((cand) => (
+                  <div
+                    key={cand.key}
+                    className={`composer__routing-row${cand.key === explanation.selected ? ' composer__routing-row--selected' : ''}${cand.rejectedReason ? ' composer__routing-row--rejected' : ''}`}
+                  >
+                    <span className="composer__routing-cell composer__routing-cell-key" title={cand.key}>
+                      {cand.key === explanation.selected && <span className="composer__routing-checkmark">✓ </span>}
+                      {cand.key}
+                    </span>
+                    <span className="composer__routing-cell">{cand.quality}/6</span>
+                    <span className="composer__routing-cell">{cand.latency !== null ? `${Math.round(cand.latency)}ms` : '—'}</span>
+                    <span className="composer__routing-cell">
+                      <span className={`composer__cost-badge composer__cost-badge--${cand.costTier}`}>
+                        {cand.costTier}
+                      </span>
+                    </span>
+                    <span
+                      className={`composer__routing-cell composer__routing-cell-status${cand.rejectedReason ? ' composer__routing-cell-status--rejected' : ''}`}
+                      title={cand.rejectedReason ?? 'Healthy'}
+                    >
+                      {cand.rejectedReason ? cand.rejectedReason : `${(cand.score * 100).toFixed(0)}%`}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="composer__footer">

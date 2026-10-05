@@ -306,6 +306,52 @@ export type GeminiLiveEvent =
   | { type: 'closed'; code: number; reason: string }
   | { type: 'reconnecting'; attempt: number; maxAttempts: number }
 
+/* --- Leroy sidecar (the gemini-live-agent harness) ------------------------
+ * Structurally identical to src/main/leroy/protocol.ts, duplicated rather than
+ * imported: preload must not import main (see CONTRACTS.md). Keep in sync. */
+
+export type LeroyConnectionState =
+  | 'idle' | 'connecting' | 'live' | 'draining' | 'reconnecting'
+  | 'disconnecting' | 'disconnected' | 'error' | 'failed'
+
+export type LeroyEvent =
+  | { type: 'ready'; protocol: number; runId: string }
+  | { type: 'connection_state_changed'; state: LeroyConnectionState; detail: string }
+  | { type: 'partial_transcript'; text: string; source: 'user' | 'model'; turnId: number }
+  | { type: 'turn_complete'; source: 'user' | 'model'; text: string; turnId: number }
+  | { type: 'tool_call_received'; callId: string; name: string; args: Record<string, unknown> }
+  | { type: 'tool_approval_requested'; callId: string; name: string; args: Record<string, unknown>; allowText: string }
+  | { type: 'tool_result_sent'; callId: string; name: string; ok: boolean; result: string; orphaned: boolean }
+  | { type: 'tool_call_cancelled'; callIds: string[]; reason: string }
+  | { type: 'session_expiring'; seconds: number | null }
+  | { type: 'audio_level'; source: string; level: number }
+  | { type: 'session_error'; message: string; fatal: boolean }
+  | { type: 'rate_limit_hit'; model: string; tier: string; tpmUsed: number; tpmLimit: number; cooldownSeconds: number }
+  | { type: 'context_reset'; reason: string }
+  | { type: 'usage_update'; promptTokens: number; cachedTokens: number; completionTokens: number; audioTokens: number; videoTokens: number; totalTokens: number; estimatedUsd: number | null }
+  | { type: 'session_ended'; code: string; detail: string }
+  | { type: 'fatal'; message: string }
+  | { type: 'sidecar_exit'; code: number | null; signal: string | null; stderr: string }
+  | { type: 'sidecar_error'; message: string }
+
+export type LeroyCommand =
+  | { type: 'disconnect' }
+  | { type: 'send_text'; text: string }
+  | { type: 'set_mic_gate'; open: boolean }
+  | { type: 'set_share_screen'; enabled: boolean; monitor?: number }
+  | { type: 'approve_tool'; call_id: string }
+  | { type: 'deny_tool'; call_id: string; reason?: string }
+  | { type: 'cancel_tool'; call_ids: string[] }
+  | { type: 'set_gating_mode'; mode: 'guarded' | 'yolo'; duration_minutes?: number }
+  | { type: 'ping' }
+
+export type LeroyStartOptions = {
+  /** Overrides the `LEROY_AGENT_DIR` / `~/projects/gemini-live-agent` lookup. */
+  agentDir?: string
+  /** Partial `AppSettings` for the Python harness (voice, model, working_dir, ...). */
+  settings?: Record<string, unknown>
+}
+
 /* --- Phase 1 code surface (fs / git / terminal / editor deep-links) -------
  * Deliberately duplicated rather than imported from src/main/fsService.ts / gitService.ts
  * (main must not be imported by preload — see CONTRACTS.md "Phase 1 — Code surface"). Kept
@@ -552,6 +598,20 @@ export interface OpencodeApi {
     saveTranscript(a: { messages: LiveTranscriptMessage[] }): Promise<string>
     revealTranscripts(): Promise<void>
   }
+  /**
+   * The Leroy sidecar: tool calling with approval gating, dual-key tier
+   * failover and session resumption, run by the `gemini-live-agent` Python
+   * harness. The child owns the microphone, speaker and screen capture, so a
+   * window must not also run the `live.*` media pipeline while this is up.
+   */
+  leroy: {
+    start(options?: LeroyStartOptions): Promise<void>
+    send(command: LeroyCommand): void
+    stop(): Promise<void>
+    /** True when a sidecar is running for this window. */
+    status(): Promise<boolean>
+    onEvent(cb: (event: LeroyEvent) => void): () => void
+  }
   crashLog: {
     /** Bounded tail read of the main-process crash log; empty report when no log exists. */
     read(): Promise<CrashLogReport>
@@ -664,7 +724,8 @@ function subscribe<T>(
     | 'oc:live:message'
     | 'oc:term:data'
     | 'oc:term:exit'
-    | 'oc:harness:event',
+    | 'oc:harness:event'
+    | 'oc:leroy:event',
   callback: (payload: T) => void
 ): () => void {
   const listener = (_event: IpcRendererEvent, payload: T): void => {
@@ -747,6 +808,13 @@ const api: OpencodeApi = {
     onMessage: (cb) => subscribe<GeminiLiveEvent>('oc:live:message', cb),
     saveTranscript: (a) => ipcRenderer.invoke('oc:live:saveTranscript', a),
     revealTranscripts: () => ipcRenderer.invoke('oc:live:transcripts:reveal')
+  },
+  leroy: {
+    start: (options) => ipcRenderer.invoke('oc:leroy:start', options ?? {}),
+    send: (command) => ipcRenderer.send('oc:leroy:send', command),
+    stop: () => ipcRenderer.invoke('oc:leroy:stop'),
+    status: () => ipcRenderer.invoke('oc:leroy:status'),
+    onEvent: (cb) => subscribe<LeroyEvent>('oc:leroy:event', cb)
   },
   crashLog: {
     read: () => ipcRenderer.invoke('oc:crashlog:read'),

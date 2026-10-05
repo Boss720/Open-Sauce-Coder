@@ -195,6 +195,10 @@ export class GeminiAdapter implements ProviderAdapter {
 
     const { systemInstruction, contents } = toGeminiContents(request.messages)
     const abort = new AbortController()
+    if (request.signal) {
+      if (request.signal.aborted) abort.abort()
+      else request.signal.addEventListener('abort', () => abort.abort(), { once: true })
+    }
     this.inflight.set(request.requestId, abort)
 
     try {
@@ -217,6 +221,7 @@ export class GeminiAdapter implements ProviderAdapter {
         contents,
         config: {
           ...config,
+          abortSignal: abort.signal,
           ...(systemInstruction ? { systemInstruction } : {}),
           ...(tools ? { tools } : {})
         }
@@ -244,11 +249,18 @@ export class GeminiAdapter implements ProviderAdapter {
     }
   }
 
-  abort(requestId: string): void {
-    const controller = this.inflight.get(requestId)
+  abort(requestIdOrRunId: string): void {
+    const controller = this.inflight.get(requestIdOrRunId)
     if (controller) {
       controller.abort()
-      this.inflight.delete(requestId)
+      this.inflight.delete(requestIdOrRunId)
+      return
+    }
+    for (const [id, ctrl] of this.inflight.entries()) {
+      if (id === requestIdOrRunId || id.startsWith(`${requestIdOrRunId}-`)) {
+        ctrl.abort()
+        this.inflight.delete(id)
+      }
     }
   }
 

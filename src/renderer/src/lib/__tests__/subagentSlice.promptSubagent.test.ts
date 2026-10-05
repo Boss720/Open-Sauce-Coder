@@ -126,4 +126,32 @@ describe('promptSubagent', () => {
     }
     expect(prompt).not.toHaveBeenCalled()
   })
+
+  it('inherits parent sessionReadOnly and sessionAgents into child session and passes them to prompt', async () => {
+    const prompt = vi.fn(async (_args: Record<string, unknown>) => undefined)
+    mockApi.mockReturnValue({ prompt } as unknown as ReturnType<typeof api>)
+
+    const { get, slice } = setup({
+      sessions: [
+        { id: 'main-ro', parentID: null } as unknown as AppState['sessions'][number],
+        { id: 'child-ro', parentID: 'main-ro' } as unknown as AppState['sessions'][number]
+      ],
+      subagentTabs: ['child-ro'],
+      sessionReadOnly: { 'main-ro': true },
+      sessionAgents: { 'main-ro': 'researcher' }
+    } as unknown as Partial<AppState>)
+
+    await slice.promptSubagent('child-ro', 'safe follow up')
+
+    expect(get().sessionReadOnly?.['child-ro']).toBe(true)
+    expect(get().sessionAgents?.['child-ro']).toBe('researcher')
+    expect(prompt).toHaveBeenCalledTimes(1)
+    expect(prompt.mock.calls[0][0]).toMatchObject({
+      sessionID: 'child-ro',
+      text: 'safe follow up',
+      agent: 'researcher',
+      tools: expect.any(Object)
+    })
+    expect((prompt.mock.calls[0][0] as { tools?: Record<string, boolean> }).tools?.write).toBe(false)
+  })
 })

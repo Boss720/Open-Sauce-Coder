@@ -15,8 +15,8 @@
  */
 
 import { classifyError, isTokenThroughputLimit } from '../rotation'
-import { saveLedger, record429, recordSuccess, recordFailure, recordTokens, nextAvailableAt } from '../routing'
-import { lastAssistantTokenTotal } from '../aggregate'
+import { saveLedger, record429, recordSuccess, recordFailure, recordTokens, recordInputTokens, nextAvailableAt } from '../routing'
+import { lastAssistantTokenTotal, lastAssistantInputTokenCount } from '../aggregate'
 import type { Ledger } from '../routing'
 import { FREE_PROVIDER_CAPS } from '../freeTier'
 import type { ErrorClass } from '../attempts'
@@ -36,7 +36,7 @@ function rateLimitedMessage(
   now: number,
   ledger: Ledger
 ): string {
-  if (errClass !== 'rpm-wait' && errClass !== 'rpd-drop') return fallback
+  if (errClass !== 'rpm-wait' && errClass !== 'rpd-drop' && errClass !== 'tpm-drop') return fallback
   const next = nextAvailableAt(Object.keys(ledger), ledger, FREE_PROVIDER_CAPS, now)
   if (next === null || next.at <= now) return fallback
   const minutes = Math.ceil((next.at - now) / 60_000)
@@ -230,6 +230,8 @@ export function createEventSlice(set: SetState, get: GetState): EventSlice {
             // the ledger or the router throttles on the wrong dimension entirely.
             const spent = lastAssistantTokenTotal(get().messages)
             if (spent > 0) setLedger(recordTokens(getLedger(), modelKey, spent, now))
+            const inputSpent = lastAssistantInputTokenCount(get().messages)
+            if (inputSpent > 0) setLedger(recordInputTokens(getLedger(), modelKey, inputSpent, now))
             saveLedger(getLedger())
           }
           // R2: reset per-exchange retry counter ONLY on clean completion
@@ -309,7 +311,7 @@ export function createEventSlice(set: SetState, get: GetState): EventSlice {
           const capturedPrompt = lastPrompt?.sessionID === sessionID ? lastPrompt : null
           const canFailover =
             state.routingMode !== 'locked' &&
-            (errClass === 'rpm-wait' || errClass === 'rpd-drop' || errClass === 'timeout' || errClass === 'transient')
+            (errClass === 'rpm-wait' || errClass === 'rpd-drop' || errClass === 'tpm-drop' || errClass === 'timeout' || errClass === 'transient')
 
           if (canFailover && attemptSafe && capturedPrompt && state.directory) {
             void (async () => {
@@ -348,6 +350,15 @@ export function createEventSlice(set: SetState, get: GetState): EventSlice {
           if (!info || typeof info.id !== 'string') return
           const known = state.sessions.some((s) => s.id === info.id)
           if (!known && !samePath(info.directory, state.directory)) return
+
+          if (info.parentID && state.sessionReadOnly?.[info.parentID]) {
+            set((s) => ({
+              sessionReadOnly: { ...s.sessionReadOnly, [info.id]: true },
+              sessions: upsertSession(s.sessions, info)
+            }))
+            return
+          }
+
           set({ sessions: upsertSession(state.sessions, info) })
           return
         }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { contextLimit, contextUsed, sessionCost } from '../aggregate'
+import { contextLimit, contextUsed, lastAssistantInputTokenCount, sessionCost } from '../aggregate'
 import type { MessageWithParts, Provider } from '../types'
 
 describe('aggregate helpers', () => {
@@ -27,6 +27,16 @@ describe('aggregate helpers', () => {
       }
     ]
     expect(contextUsed(messages)).toBe(1500)
+  })
+
+  it('lastAssistantInputTokenCount reads input tokens from the newest assistant message', () => {
+    const messages: MessageWithParts[] = [
+      { info: { role: 'assistant', tokens: { input: 90, output: 10 } } as unknown as MessageWithParts['info'], parts: [] },
+      { info: { role: 'user' } as unknown as MessageWithParts['info'], parts: [] },
+      { info: { role: 'assistant', tokens: { input: 120, output: 45 } } as unknown as MessageWithParts['info'], parts: [] }
+    ]
+    expect(lastAssistantInputTokenCount(messages)).toBe(120)
+    expect(lastAssistantInputTokenCount([])).toBe(0)
   })
 
   it('contextLimit reads model limit from providers array', () => {

@@ -30,28 +30,11 @@ export const ALLOWLIST: ReadonlySet<string> = new Set([
   'GOOGLE_GENERATIVE_AI_API_KEY',
   'GOOGLE_API_KEY',
   'GROQ_API_KEY',
-  'CEREBRAS_API_KEY',
   'MISTRAL_API_KEY',
   'OPENROUTER_API_KEY',
-  'COHERE_API_KEY',
-  'GITHUB_MODELS_TOKEN',
-  'GITHUB_TOKEN',
-  'CLOUDFLARE_API_TOKEN',
-  'CLOUDFLARE_ACCOUNT_ID',
-  'NVIDIA_NIM_API_KEY',
-  'NVIDIA_API_KEY',
-  'HUGGINGFACE_API_KEY',
-  'HF_TOKEN',
-  'SCALEWAY_API_KEY',
-  'TOGETHER_API_KEY',
-  'FIREWORKS_API_KEY',
-  'SAMBANOVA_API_KEY',
-  'HYPERBOLIC_API_KEY',
-  'OPENAI_API_KEY',
-  'DEEPSEEK_API_KEY',
   'MOONSHOT_API_KEY',
   'XAI_API_KEY',
-  'ANTHROPIC_API_KEY'
+  'CEREBRAS_API_KEY'
 ])
 
 /**
@@ -62,10 +45,7 @@ export const ALLOWLIST: ReadonlySet<string> = new Set([
  * "Google Generative AI API key is missing".
  */
 export const ALIASES: Readonly<Record<string, readonly string[]>> = {
-  GEMINI_API_KEY: ['GOOGLE_GENERATIVE_AI_API_KEY', 'GOOGLE_API_KEY'],
-  HUGGINGFACE_API_KEY: ['HF_TOKEN'],
-  GITHUB_MODELS_TOKEN: ['GITHUB_TOKEN'],
-  NVIDIA_NIM_API_KEY: ['NVIDIA_API_KEY']
+  GEMINI_API_KEY: ['GOOGLE_GENERATIVE_AI_API_KEY', 'GOOGLE_API_KEY']
 }
 
 /**
@@ -174,7 +154,6 @@ export function loadProviderEnv(): ProviderEnv {
       const value = parsed[key]
       if (value) vars[key] = value
     }
-
 
     for (const [source, targets] of Object.entries(ALIASES)) {
       const value = vars[source]

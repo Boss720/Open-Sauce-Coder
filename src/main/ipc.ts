@@ -36,6 +36,7 @@ import {
 import type { AppSettingsController, AppSettingsResult } from './appSettings'
 import type { LiveWindowController } from './liveWindow'
 import { sendGeminiLive, startGeminiLive, stopGeminiLive, type GeminiLiveInput } from './geminiLive'
+import { isLeroyRunning, sendLeroyCommand, startLeroy, stopLeroy, LEROY_EVENT_CHANNEL } from './leroy/sidecar'
 import { saveLiveTranscript, revealTranscriptsFolder } from './liveTranscripts'
 import { nanogptLimiter } from './nanogptLimiter'
 import { getCrashLogPath, readCrashLog, type CrashLogReport } from './crashlog'
@@ -155,6 +156,9 @@ const CHANNELS = [
   'oc:live:stop',
   'oc:live:saveTranscript',
   'oc:live:transcripts:reveal',
+  'oc:leroy:start',
+  'oc:leroy:stop',
+  'oc:leroy:status',
   'oc:crashlog:read',
   'oc:crashlog:reveal',
   'oc:nanogpt:models',
@@ -1286,6 +1290,43 @@ export function registerIpc(options: RegisterIpcOptions = {}): void {
   ipcMain.handle('oc:live:transcripts:reveal', (): void => revealTranscriptsFolder())
 
   /* ---------------------------------------------------------------- */
+  /* Leroy — the gemini-live-agent harness run as a Python sidecar.    */
+  /* Keyed by event.sender.id like oc:live:*, so a window can only     */
+  /* ever drive its own child process.                                 */
+  /* ---------------------------------------------------------------- */
+
+  ipcMain.handle('oc:leroy:start', (event, optionsArg: unknown): void => {
+    const options = optionsArg === undefined || optionsArg === null ? {} : requireObject(optionsArg, 'leroy start options')
+    const agentDir = options.agentDir
+    if (agentDir !== undefined && typeof agentDir !== 'string') throw new Error('leroy agentDir must be a string')
+    const settings = options.settings
+    if (settings !== undefined && (typeof settings !== 'object' || settings === null || Array.isArray(settings))) {
+      throw new Error('leroy settings must be an object')
+    }
+    startLeroy(event.sender.id, {
+      agentDir: agentDir as string | undefined,
+      settings: settings as Record<string, unknown> | undefined
+    })
+  })
+  ipcMain.handle('oc:leroy:stop', (event): void => stopLeroy(event.sender.id))
+  ipcMain.handle('oc:leroy:status', (event): boolean => isLeroyRunning(event.sender.id))
+  ipcMain.on('oc:leroy:send', (event, command: unknown): void => {
+    // Fire-and-forget like oc:live:send; a malformed command must not reject
+    // into an unhandled rejection in the renderer, so it is reported as an
+    // event on the same channel the session already listens to.
+    try {
+      sendLeroyCommand(event.sender.id, command)
+    } catch (error) {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send(LEROY_EVENT_CHANNEL, {
+          type: 'sidecar_error',
+          message: error instanceof Error ? error.message : String(error)
+        })
+      }
+    }
+  })
+
+  /* ---------------------------------------------------------------- */
   /* Crash log — bounded read of main's own file; the renderer never   */
   /* passes a path (main derives it from crashlog.getCrashLogPath()).  */
   /* ---------------------------------------------------------------- */
@@ -1360,4 +1401,5 @@ export function registerIpc(options: RegisterIpcOptions = {}): void {
 export function unregisterIpc(): void {
   for (const channel of CHANNELS) ipcMain.removeHandler(channel)
   ipcMain.removeAllListeners('oc:live:send')
+  ipcMain.removeAllListeners('oc:leroy:send')
 }

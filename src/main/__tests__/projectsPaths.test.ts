@@ -11,12 +11,22 @@ describe('assertSubpath', () => {
     expect(assertSubpath(base, resolve(base, 'AGENTS.md'))).toBe(resolve(base, 'AGENTS.md'))
   })
 
-  it('rejects the base, parent traversal, and absolute outsiders', () => {
+  it('rejects the base, parent traversal, and absolute outsiders by default', () => {
     const base = resolve('C:/workspace/project')
     expect(() => assertSubpath(base, '.')).toThrow(/strictly inside/i)
     expect(() => assertSubpath(base, '..\\escape.md')).toThrow(/strictly inside/i)
     expect(() => assertSubpath(base, '../escape.md')).toThrow(/strictly inside/i)
     expect(() => assertSubpath(base, resolve(base, '..', 'escape.md'))).toThrow(/strictly inside/i)
+  })
+
+  it('allows base when allowRoot is true, but continues to reject escapes', () => {
+    const base = resolve('C:/workspace/project')
+    expect(assertSubpath(base, '.', { allowRoot: true })).toBe(base)
+    expect(assertSubpath(base, '', { allowRoot: true })).toBe(base)
+    expect(assertSubpath(base, 'child/path.ts', { allowRoot: true })).toBe(resolve(base, 'child/path.ts'))
+    expect(() => assertSubpath(base, '..\\escape.md', { allowRoot: true })).toThrow(/strictly inside/i)
+    expect(() => assertSubpath(base, '../escape.md', { allowRoot: true })).toThrow(/strictly inside/i)
+    expect(() => assertSubpath(base, resolve(base, '..', 'escape.md'), { allowRoot: true })).toThrow(/strictly inside/i)
   })
 
   it('rejects existing symlink segments', () => {

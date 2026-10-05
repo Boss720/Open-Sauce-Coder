@@ -43,6 +43,7 @@ export type FunctionDefinition = {
 
 export type ChatRequest = {
   requestId: string
+  signal?: AbortSignal
   model: string
   messages: ChatMessage[]
   tools?: FunctionDefinition[]

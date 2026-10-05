@@ -8,6 +8,8 @@ import {
   underModelRateCaps,
   releaseAttempt,
   selectModel,
+  selectModelDetailed,
+  getCostTier,
   parseModelKey,
   codingQuality,
   loadLedger,
@@ -15,7 +17,8 @@ import {
   LEDGER_STORAGE_KEY,
   type Ledger,
   type ModelKey,
-  type ModelCapsMap
+  type ModelCapsMap,
+  type ModelSelectionExplanation
 } from '../routing'
 
 describe('Smart routing v2 (routing.ts)', () => {
@@ -74,8 +77,8 @@ describe('Smart routing v2 (routing.ts)', () => {
       expect(updated[modelA].sends).toEqual([now - 100000])
     })
 
-    it('reserves attempts before dispatch and prunes sends older than 24h', () => {
-      const oldTime = now - 90000000 // > 24h ago
+    it('reserves attempts before dispatch and prunes sends older than 48h', () => {
+      const oldTime = now - 49 * 3600_000 // beyond the 25-hour Pacific day safety window
       const recentTime = now - 10000 // 10s ago
       const ledger: Ledger = {
         [modelA]: {
@@ -323,7 +326,7 @@ describe('Smart routing v2 (routing.ts)', () => {
           error: 0,
           last429: null,
           latencyEwma: null,
-          sends: [Date.now() - 90000000] // > 24h
+          sends: [Date.now() - 49 * 3600_000] // beyond the Pacific-day retention window
         }
       })
 
@@ -416,7 +419,8 @@ describe('Smart routing v2 (routing.ts)', () => {
 
   describe('codingQuality with freeCodingQuality integration', () => {
     it('returns tier-based score for known free models', () => {
-      expect(codingQuality('google/gemini-3.6-flash')).toBe(5) // S-tier
+      expect(codingQuality('google/gemini-3.8-flash')).toBe(5) // S-tier
+      expect(codingQuality('google/gemini-3.6-flash')).toBe(4) // A-tier
       expect(codingQuality('groq/openai/gpt-oss-120b')).toBe(4) // A-tier
       expect(codingQuality('groq/llama-3.3-70b-versatile')).toBe(3) // B-tier
       expect(codingQuality('groq/llama-3.1-8b-instant')).toBe(2) // C-tier
@@ -443,6 +447,115 @@ describe('Smart routing v2 (routing.ts)', () => {
         authenticatedProviders: new Set(['google', 'groq'])
       })
       expect(picked).toBe(modelB)
+    })
+  })
+
+  describe('getCostTier', () => {
+    it('classifies subscription, free, and paid models accurately', () => {
+      expect(getCostTier('nanogpt/claude-3-5-sonnet')).toBe('subscription')
+      expect(getCostTier('google/gemini-3.6-flash')).toBe('free')
+      expect(getCostTier('groq/llama-3.3-70b-versatile')).toBe('free')
+      expect(getCostTier('openai/gpt-4o')).toBe('paid')
+      expect(getCostTier('invalid-key')).toBe('paid')
+    })
+  })
+
+  describe('selectModelDetailed (M3 explainable balanced routing)', () => {
+    const caps: ModelCapsMap = {
+      groq: { rpm: 2 }
+    }
+
+    it('returns transparent scoring, candidate breakdown, and rationale', () => {
+      const available = new Set([modelA, modelB, modelC])
+      const ledger: Ledger = {
+        [modelA]: { cooldownUntil: 0, cooldownMs: 30000, success: 10, error: 0, last429: null, latencyEwma: 250, sends: [] },
+        [modelB]: { cooldownUntil: 0, cooldownMs: 30000, success: 5, error: 1, last429: null, latencyEwma: 800, sends: [] },
+        [modelC]: { cooldownUntil: 0, cooldownMs: 30000, success: 1, error: 0, last429: null, latencyEwma: null, sends: [] }
+      }
+
+      const detailed: ModelSelectionExplanation = selectModelDetailed(null, ledger, caps, now, {
+        sticky: false,
+        current: null,
+        available,
+        authenticatedProviders: new Set(['google', 'groq', 'cerebras'])
+      })
+
+      expect(detailed.selected).toBe(modelC)
+      expect(detailed.reason).toContain('Selected cerebras/gpt-oss-120b')
+      expect(detailed.candidates).toHaveLength(3)
+
+      const candA = detailed.candidates.find((c) => c.key === modelA)
+      expect(candA).toBeDefined()
+      expect(candA?.score).toBeGreaterThan(0)
+      expect(candA?.quality).toBe(codingQuality(modelA))
+      expect(candA?.latency).toBe(250)
+      expect(candA?.costTier).toBe('free')
+      expect(candA?.rejectedReason).toBeUndefined()
+    })
+
+    it('explains sticky model preservation when active and healthy', () => {
+      const available = new Set([modelA, modelB])
+      const ledger: Ledger = {
+        [modelA]: { cooldownUntil: 0, cooldownMs: 30000, success: 10, error: 0, last429: null, latencyEwma: 100, sends: [] },
+        [modelB]: { cooldownUntil: 0, cooldownMs: 30000, success: 5, error: 0, last429: null, latencyEwma: 500, sends: [] }
+      }
+
+      const detailed = selectModelDetailed(null, ledger, caps, now, {
+        sticky: true,
+        current: modelB,
+        available,
+        authenticatedProviders: new Set(['google', 'groq'])
+      })
+
+      expect(detailed.selected).toBe(modelB)
+      expect(detailed.reason).toContain('Preserved current model (sticky selection enabled and model is healthy)')
+    })
+
+    it('records specific rejection reasons for candidates', () => {
+      const available = new Set([modelA, modelB, modelC])
+      const ledger: Ledger = {
+        // modelA is in cooldown
+        [modelA]: { cooldownUntil: now + 15000, cooldownMs: 30000, success: 0, error: 2, last429: now, latencyEwma: null, sends: [] },
+        // modelB hit rate limit cap
+        [modelB]: { cooldownUntil: 0, cooldownMs: 30000, success: 5, error: 0, last429: null, latencyEwma: null, sends: [now - 1000, now - 2000] },
+        // modelC has high failure rate
+        [modelC]: { cooldownUntil: 0, cooldownMs: 30000, success: 0, error: 5, last429: null, latencyEwma: null, sends: [] }
+      }
+
+      const detailed = selectModelDetailed(null, ledger, caps, now, {
+        sticky: false,
+        current: null,
+        available,
+        authenticatedProviders: new Set(['google', 'groq', 'cerebras'])
+      })
+
+      expect(detailed.selected).toBeNull()
+      expect(detailed.reason).toContain('No healthy candidates available')
+
+      const candA = detailed.candidates.find((c) => c.key === modelA)
+      expect(candA?.rejectedReason).toContain('Cooldown active')
+
+      const candB = detailed.candidates.find((c) => c.key === modelB)
+      expect(candB?.rejectedReason).toBe('Rate limit cap reached')
+
+      const candC = detailed.candidates.find((c) => c.key === modelC)
+      expect(candC?.rejectedReason).toContain('High failure rate')
+    })
+
+    it('flags unauthenticated providers and unavailable models', () => {
+      const available = new Set([modelA])
+      const detailed = selectModelDetailed(['google/gemini-2.5-flash', 'openai/gpt-4o', 'groq/llama-3.3-70b-versatile'], {}, caps, now, {
+        sticky: false,
+        current: null,
+        available,
+        authenticatedProviders: new Set(['openai']) // google and groq not authenticated
+      })
+
+      const candGoogle = detailed.candidates.find((c) => c.key === modelA)
+      expect(candGoogle?.rejectedReason).toBe('Provider not authenticated')
+
+      const candOpenAI = detailed.candidates.find((c) => c.key === 'openai/gpt-4o')
+      expect(candOpenAI?.rejectedReason).toBe('Not available on server')
     })
   })
 })

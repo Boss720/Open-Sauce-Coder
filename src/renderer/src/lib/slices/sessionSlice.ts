@@ -56,8 +56,8 @@ export function harnessPromptFields(
   get: GetState,
   sessionID: string
 ): { agent?: string; tools?: Record<string, boolean> } {
-  const agent = get().sessionAgents[sessionID]
-  const readOnly = get().sessionReadOnly[sessionID] === true
+  const agent = get().sessionAgents?.[sessionID]
+  const readOnly = get().sessionReadOnly?.[sessionID] === true
 
   // Return cached result if sessionID and state values haven't changed
   if (
@@ -464,7 +464,7 @@ export function createSessionSlice(set: SetState, get: GetState): SessionSlice {
         const nextMode = get().routingMode
         get().addSystemNotice(
           isAutoRoutingActive(nextMode)
-            ? `⚡ **Free Model Auto-Routing is now ENABLED.** OpenCode Desktop will automatically cycle to another free model (Gemini, Groq, OpenRouter, Cerebras, Mistral, Cohere) whenever a 429 rate limit or quota error occurs!\n\nMode: ${describeRoutingMode(nextMode)}`
+            ? `⚡ **Free Model Auto-Routing is now ENABLED.** OpenCode Desktop will automatically cycle between available NanoGPT and Gemini models whenever a 429 rate limit or quota error occurs!\n\nMode: ${describeRoutingMode(nextMode)}`
             : `⚪ **Free Model Auto-Routing is now DISABLED.** ${describeRoutingMode(nextMode)}`
         )
       } else if (command === '/btw') {
@@ -574,7 +574,15 @@ export function createSessionSlice(set: SetState, get: GetState): SessionSlice {
         }
       }
 
-      setLastPrompt({ text: trimmed, parts, sessionID, userMessageID: null })
+      const policy = harnessPromptFields(get, sessionID)
+      const hasPolicy = Boolean(policy && Object.keys(policy).length > 0)
+      setLastPrompt({
+        text: trimmed,
+        parts,
+        sessionID,
+        userMessageID: null,
+        ...(hasPolicy ? { policy } : {})
+      })
       resetRotateRetries()
       const sendStartTime = Date.now()
       setLastSendStartTime(sendStartTime)
@@ -591,9 +599,11 @@ export function createSessionSlice(set: SetState, get: GetState): SessionSlice {
           modelID,
           text: trimmed,
           parts,
-          ...harnessPromptFields(get, sessionID)
+          ...policy
         })
       } catch (e) {
+        const attempt = getActiveAttempt()
+        const attemptSafe = !attempt?.toolExecuted && !attempt?.hasStreamed
         clearActiveAttempt(sessionID)
         const errString = errText(e)
         const now = Date.now()
@@ -615,10 +625,10 @@ export function createSessionSlice(set: SetState, get: GetState): SessionSlice {
 
         const canFailover =
           get().routingMode !== 'locked' &&
-          (errClass === 'rpm-wait' || errClass === 'rpd-drop' || errClass === 'timeout' || errClass === 'transient')
+          (errClass === 'rpm-wait' || errClass === 'rpd-drop' || errClass === 'tpm-drop' || errClass === 'timeout' || errClass === 'transient')
 
         // R1 guard: if any tool ran or tokens streamed, do NOT auto-retry
-        const attemptSafe = !getActiveAttempt()?.toolExecuted && !getActiveAttempt()?.hasStreamed
+
 
         if (canFailover && attemptSafe) {
           const failoverResult = await beginFailover(
@@ -629,6 +639,7 @@ export function createSessionSlice(set: SetState, get: GetState): SessionSlice {
             `Rate limit / error on ${providerID}/${modelID}`,
             `${providerID}/${modelID}`,
             failedProviderID,
+            ...(hasPolicy ? [policy] : [])
           )
           if (failoverResult) return
         }

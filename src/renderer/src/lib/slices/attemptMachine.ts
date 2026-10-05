@@ -22,6 +22,7 @@ import {
 } from '../routing'
 import { api, errText } from './api'
 import { store } from './storeRef'
+import { READONLY_TOOLS } from '../toolPolicies'
 import type { PromptPart } from '../types'
 
 /* ------------------------------------------------------------------ *
@@ -34,6 +35,7 @@ export interface LastPrompt {
   sessionID: string
   /** The user message id that opened this exchange, for revertMessage transactionality. */
   userMessageID: string | null
+  policy?: { agent?: string; tools?: Record<string, boolean> }
 }
 
 export type ActiveAttempt = {
@@ -259,6 +261,16 @@ export function parseRetryAfterMs(headers: Record<string, string> | undefined | 
  * Returns true if a retry was dispatched, false if the caller should surface
  * the error normally (all fallbacks exhausted or unsafe to retry).
  */
+function getHarnessPolicy(sessionID: string): { agent?: string; tools?: Record<string, boolean> } {
+  const state = store().getState()
+  const agent = state.sessionAgents?.[sessionID]
+  const readOnly = state.sessionReadOnly?.[sessionID] === true
+  return {
+    ...(agent ? { agent } : {}),
+    ...(readOnly ? { tools: { ...READONLY_TOOLS } } : {})
+  }
+}
+
 export async function beginFailover(
   sessionID: string,
   directory: string,
@@ -267,6 +279,7 @@ export async function beginFailover(
   reason: string,
   failedModelKey?: string,
   failedProviderID?: string,
+  policySnapshot?: { agent?: string; tools?: Record<string, boolean> }
 ): Promise<boolean> {
   // Guard: single-entry
   if (activeAttempt?.failoverInFlight) return true
@@ -319,6 +332,8 @@ export async function beginFailover(
   startActiveAttempt(sessionID, rotated.providerID, rotated.modelID)
   store().setState({ busy: true, error: null })
 
+  const effectivePolicy = policySnapshot ?? prompt.policy ?? getHarnessPolicy(sessionID)
+
   try {
     await api().prompt({
       directory,
@@ -327,6 +342,7 @@ export async function beginFailover(
       modelID: rotated.modelID,
       text,
       parts,
+      ...effectivePolicy
     })
     return true
   } catch (error) {

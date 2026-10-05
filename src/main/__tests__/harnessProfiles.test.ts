@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BUILTIN_PROFILES, validateProfile } from '../harness/profiles'
+import { BUILTIN_PROFILES, validateProfile, type AgentProfile } from '../harness/profiles'
 import { ToolRegistry } from '../harness/tools/registry'
 import { registerBuiltins } from '../harness/tools/builtins'
 
@@ -53,6 +53,29 @@ describe('validateProfile', () => {
     expect(profile.billingRoute).toBeUndefined()
     expect(profile.routingSuffix).toBeUndefined()
   })
+
+  it('preserves explicit empty tools array tools: [] without coercing to undefined', () => {
+    const profile = validateProfile({ id: 'safe-agent', name: 'Safe', provider: 'google', model: 'm', tools: [] })
+    expect(profile.tools).toEqual([])
+  })
+
+  it('preserves extra fields and advanced configs losslessly', () => {
+    const raw = {
+      id: 'advanced',
+      name: 'Adv',
+      provider: 'google',
+      model: 'gemini-2.5-pro',
+      thinking: { enabled: true, budget: 16384 },
+      customParam: 'my-custom-value',
+      routingSuffix: ':fast',
+      billingRoute: 'subscription'
+    }
+    const profile = validateProfile(raw) as AgentProfile & { customParam?: string }
+    expect(profile.thinking).toEqual({ enabled: true, budget: 16384 })
+    expect(profile.customParam).toBe('my-custom-value')
+    expect(profile.routingSuffix).toBe(':fast')
+    expect(profile.billingRoute).toBe('subscription')
+  })
 })
 
 describe('BUILTIN_PROFILES', () => {
@@ -76,5 +99,13 @@ describe('BUILTIN_PROFILES', () => {
       expect(tools.every((t) => t.category === 'read')).toBe(true)
       expect(tools.some((t) => t.name === 'shell')).toBe(false)
     }
+  })
+
+  it('profile with tools: [] receives zero tools from registry', () => {
+    const registry = new ToolRegistry()
+    registerBuiltins(registry)
+    const profile = validateProfile({ id: 'isolated', name: 'Isolated', provider: 'google', model: 'm', tools: [] })
+    const tools = registry.forProfile(profile)
+    expect(tools).toHaveLength(0)
   })
 })
