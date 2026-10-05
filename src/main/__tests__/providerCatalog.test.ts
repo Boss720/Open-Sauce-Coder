@@ -25,10 +25,12 @@ describe('providerCatalog', () => {
   })
 
   it('includes all supported BYOK providers', () => {
-    const expected = ['nanogpt', 'google', 'groq', 'mistral', 'openrouter', 'moonshot', 'xai', 'cerebras']
+    const expected = ['nanogpt', 'google', 'anthropic', 'openai', 'groq', 'mistral', 'openrouter', 'moonshot', 'xai', 'cerebras', 'deepseek']
     expect(PROVIDER_CATALOG.map((entry) => entry.providerID)).toEqual(expected)
     expect(catalogByProvider('groq')).toBeDefined()
-    expect(catalogByProvider('openai')).toBeUndefined()
+    expect(catalogByProvider('anthropic')).toBeDefined()
+    expect(catalogByProvider('openai')).toBeDefined()
+    expect(catalogByProvider('deepseek')).toBeDefined()
   })
 
   it('catalogByEnvVar resolves GEMINI_API_KEY correctly', () => {
@@ -81,7 +83,7 @@ describe('providerCatalog', () => {
   it('resolves newly restored providers and keeps non-catalog vars undefined', () => {
     expect(catalogByEnvVar('GROQ_API_KEY')?.providerID).toBe('groq')
     expect(ALLOWLIST.has('GROQ_API_KEY')).toBe(true)
-    expect(catalogByEnvVar('OPENAI_API_KEY')).toBeUndefined()
-    expect(ALLOWLIST.has('OPENAI_API_KEY')).toBe(false)
+    expect(catalogByEnvVar('COHERE_API_KEY')).toBeUndefined()
+    expect(ALLOWLIST.has('COHERE_API_KEY')).toBe(false)
   })
 })

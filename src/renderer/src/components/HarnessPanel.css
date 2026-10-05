@@ -47,6 +47,7 @@
 .harness__btn--primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
 .harness__btn--danger { color: var(--danger); }
 .harness__btn--sm { padding: 3px 9px; font-size: 12px; }
+.harness__btn--xs { padding: 2px 7px; font-size: 11px; font-family: var(--mono); }
 
 .harness__profiles { list-style: none; margin: 0 0 16px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .harness__profile {
@@ -103,6 +104,8 @@
 
 .harness__field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--fg-dim); min-width: 0; }
 .harness__field--grow { flex: 1; }
+.harness__field-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.harness__presets { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; margin-top: 6px; }
 .harness__field input,
 .harness__field select,
 .harness__field textarea,
@@ -155,6 +158,7 @@
 .harness__badge--completed { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 55%, var(--border)); }
 .harness__badge--failed { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 55%, var(--border)); }
 .harness__badge--cancelled { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, var(--border)); }
+.harness__badge--warning { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, var(--border)); font-size: 10px; text-transform: none; }
 
 .harness__monitor-wrap { position: relative; min-width: 0; }
 
@@ -210,6 +214,10 @@
 .harness__event--tool summary { display: flex; align-items: center; gap: 7px; cursor: pointer; font-family: var(--mono); font-size: 12px; }
 .harness__tool-icon { color: var(--accent); }
 .harness__tool-name { font-weight: 600; }
+.harness__event--tool-read .harness__tool-icon { color: var(--accent); }
+.harness__event--tool-write .harness__tool-icon { color: var(--ok); }
+.harness__event--tool-shell .harness__tool-icon { color: var(--warn); }
+.harness__event--tool-web .harness__tool-icon { color: var(--accent); }
 .harness__event--error { color: var(--danger); }
 .harness__event--warning { color: var(--warn); }
 .harness__event--done { color: var(--fg-dim); border-top: 1px solid var(--border); padding-top: 8px; }

@@ -485,6 +485,8 @@ export type AgentProfile = {
   routingSuffix?: string
   billingRoute?: 'subscription' | 'standard'
   caching?: boolean
+  /** Base URL override for custom endpoints (Ollama, LM Studio) or proxying. */
+  baseUrl?: string
   /** Built-in profiles are read-only; clone to customise. */
   builtin?: boolean
   createdAt?: number

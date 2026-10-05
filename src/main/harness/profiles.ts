@@ -39,12 +39,14 @@ export type AgentProfile = {
   tokenBudget?: number
   costBudget?: number
 
-  // ── Routing ──
+  // ── Routing & Endpoint ──
   /** NanoGPT routing suffix: ':fast', ':cheap'. Only applies when provider is 'nanogpt'. */
   routingSuffix?: string
   /** NanoGPT billing route: 'subscription' uses the covered tier, 'standard' uses pay-per-prompt. */
   billingRoute?: 'subscription' | 'standard'
   caching?: boolean
+  /** Base URL override for custom endpoints (Ollama, LM Studio) or proxying. */
+  baseUrl?: string
 
   // ── Metadata ──
   builtin?: boolean
@@ -197,6 +199,10 @@ export function validateProfile(raw: unknown): AgentProfile {
   if (caching !== undefined) profile.caching = caching
   else delete profile.caching
 
+  const baseUrl = optionalString(raw.baseUrl)
+  if (baseUrl !== undefined) profile.baseUrl = baseUrl
+  else delete profile.baseUrl
+
   const builtin = optionalBoolean(raw.builtin)
   if (builtin !== undefined) profile.builtin = builtin
 
@@ -241,7 +247,7 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = Object.freeze([
     model: 'qwen/qwen3-coder-next',
     temperature: 0.1,
     maxTokens: 16384,
-    tools: ['fs_read', 'fs_write', 'fs_list', 'grep', 'shell', 'think'],
+    tools: ['fs_read', 'fs_write', 'fs_patch', 'fs_list', 'grep', 'shell', 'think'],
     maxTurns: 40,
     billingRoute: 'subscription',
     builtin: true
@@ -258,6 +264,68 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = Object.freeze([
     readOnly: true,
     maxTurns: 10,
     billingRoute: 'subscription',
+    builtin: true
+  },
+  {
+    id: 'gemini-pro-planner',
+    name: 'Gemini Pro Planner',
+    description: 'High-capability Google reasoning model for deep analysis and architectural design. Gemini 2.5 Pro with thinking budget.',
+    provider: 'google',
+    model: 'gemini-2.5-pro',
+    temperature: 0.2,
+    maxTokens: 16384,
+    thinking: { enabled: true, budget: 16384 },
+    tools: ['*'],
+    maxTurns: 40,
+    builtin: true
+  },
+  {
+    id: 'claude-coder',
+    name: 'Claude Coder',
+    description: 'Anthropic Claude 3.7 Sonnet with native tool use for precision software engineering and refactoring.',
+    provider: 'anthropic',
+    model: 'claude-3-7-sonnet-20250219',
+    temperature: 0.2,
+    maxTokens: 16384,
+    thinking: { enabled: true, budget: 8192 },
+    tools: ['fs_read', 'fs_write', 'fs_patch', 'fs_list', 'grep', 'shell', 'think'],
+    maxTurns: 40,
+    builtin: true
+  },
+  {
+    id: 'openai-architect',
+    name: 'OpenAI Architect',
+    description: 'General-purpose engineering and architectural reasoning powered by GPT-4o with full tool access.',
+    provider: 'openai',
+    model: 'gpt-4o',
+    temperature: 0.2,
+    maxTokens: 16384,
+    tools: ['*'],
+    maxTurns: 40,
+    builtin: true
+  },
+  {
+    id: 'groq-fast-coder',
+    name: 'Groq Fast Coder',
+    description: 'Ultra-low latency Llama 3.3 70B on Groq LPUs for rapid iterations and quick codebase inquiries.',
+    provider: 'groq',
+    model: 'llama-3.3-70b-versatile',
+    temperature: 0.1,
+    maxTokens: 8192,
+    tools: ['fs_read', 'fs_write', 'fs_patch', 'fs_list', 'grep', 'shell'],
+    maxTurns: 30,
+    builtin: true
+  },
+  {
+    id: 'deepseek-reasoner',
+    name: 'DeepSeek Reasoner',
+    description: 'DeepSeek R1 reasoning model with chain-of-thought extraction for difficult algorithmic problems.',
+    provider: 'deepseek',
+    model: 'deepseek-reasoner',
+    temperature: 0.6,
+    maxTokens: 16384,
+    tools: ['*'],
+    maxTurns: 30,
     builtin: true
   }
 ])

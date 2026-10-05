@@ -11,7 +11,12 @@ export type ProviderCatalogEntry = {
   envVar: string
   label: string
   docsUrl: string
-  test?: { url: string; authHeader: string; authScheme?: string }
+  test?: {
+    url: string
+    authHeader: string
+    authScheme?: string
+    extraHeaders?: Record<string, string>
+  }
 }
 
 export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
@@ -34,6 +39,28 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     label: 'Gemini (including Gemini Live)',
     docsUrl: 'https://ai.google.dev/gemini-api/docs',
     test: { url: 'https://generativelanguage.googleapis.com/v1beta/models?key=', authHeader: 'X-Goog-Api-Key' }
+  },
+  {
+    providerID: 'anthropic',
+    envVar: 'ANTHROPIC_API_KEY',
+    label: 'Anthropic (Claude)',
+    docsUrl: 'https://docs.anthropic.com/',
+    test: {
+      url: 'https://api.anthropic.com/v1/models',
+      authHeader: 'x-api-key',
+      extraHeaders: { 'anthropic-version': '2023-06-01' }
+    }
+  },
+  {
+    providerID: 'openai',
+    envVar: 'OPENAI_API_KEY',
+    label: 'OpenAI',
+    docsUrl: 'https://platform.openai.com/docs',
+    test: {
+      url: 'https://api.openai.com/v1/models',
+      authHeader: 'Authorization',
+      authScheme: 'Bearer'
+    }
   },
   {
     providerID: 'groq',
@@ -97,6 +124,17 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     docsUrl: 'https://inference-docs.cerebras.ai/',
     test: {
       url: 'https://api.cerebras.ai/v1/models',
+      authHeader: 'Authorization',
+      authScheme: 'Bearer'
+    }
+  },
+  {
+    providerID: 'deepseek',
+    envVar: 'DEEPSEEK_API_KEY',
+    label: 'DeepSeek',
+    docsUrl: 'https://platform.deepseek.com/',
+    test: {
+      url: 'https://api.deepseek.com/models',
       authHeader: 'Authorization',
       authScheme: 'Bearer'
     }

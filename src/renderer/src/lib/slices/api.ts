@@ -38,7 +38,8 @@ import type {
   AgentProfile,
   RunStatus,
   HarnessToolDefinition,
-  HarnessEventPayload
+  HarnessEventPayload,
+  KeyRow
 } from '../types'
 
 export interface OpencodeApi {
@@ -75,6 +76,12 @@ export interface OpencodeApi {
   config: {
     getPermission(directory: string): Promise<PermissionConfig>
     setPermission(a: { directory: string; permission: PermissionConfig }): Promise<boolean>
+  }
+  keys: {
+    list(): Promise<KeyRow[]>
+    set(a: { providerID: string; key: string }): Promise<void>
+    remove(providerID: string): Promise<void>
+    test(providerID: string): Promise<{ ok: boolean; status?: number; detail?: string }>
   }
   nanogpt: {
     models(): Promise<NanogptModelsResult>

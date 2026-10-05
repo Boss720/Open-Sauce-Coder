@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { AgentRunner, type RunnerEvent } from '../harness/runner'
+import { AgentRunner, canonicalJson, parseToolArgs, truncateToolOutput, type RunnerEvent } from '../harness/runner'
 import { ToolRegistry } from '../harness/tools/registry'
 import type { AgentProfile } from '../harness/profiles'
 import type { ChatResponse, ProviderAdapter } from '../harness/providers/adapter'
@@ -241,5 +241,310 @@ describe('AgentRunner', () => {
     expect(tool2).toHaveBeenCalledTimes(0)
     expect(result.finishReason).toBe('aborted')
     expect(events.at(-1)).toEqual({ type: 'done', result })
+  })
+
+  it('handles malformed JSON arguments by returning error to model', async () => {
+    const tools = new ToolRegistry()
+    const echoExecutor = vi.fn(async () => ({ output: 'should not run' }))
+    tools.register({ name: 'echo', description: 'echo', parameters: {}, category: 'read' }, echoExecutor)
+
+    const malformedCall: NonNullable<ChatResponse['toolCalls']>[number] = {
+      id: 'bad-call-1',
+      type: 'function',
+      function: { name: 'echo', arguments: '{invalid-json: ' }
+    }
+
+    const adapter = stubAdapter([
+      response({ finishReason: 'tool_calls', toolCalls: [malformedCall] }),
+      response({ content: 'recovered', finishReason: 'stop' })
+    ])
+
+    const events: RunnerEvent[] = []
+    const runner = makeRunner(adapter, tools)
+    const result = await runner.run('bad json test', (e) => events.push(e))
+
+    expect(result.finishReason).toBe('complete')
+    expect(echoExecutor).toHaveBeenCalledTimes(0)
+
+    const toolResult = events.find((e) => e.type === 'tool_result')
+    expect(toolResult).toMatchObject({
+      name: 'echo',
+      error: expect.stringMatching(/not valid JSON/i)
+    })
+
+    const secondRequest = adapter.chat.mock.calls[1][0] as { messages: Array<{ role: string; content: unknown }> }
+    const toolMsg = secondRequest.messages.find((m) => m.role === 'tool')
+    expect(toolMsg?.content).toContain('not valid JSON')
+  })
+
+  it('treats empty string tool arguments as empty object arguments', async () => {
+    const tools = new ToolRegistry()
+    const noargExecutor = vi.fn(async (_args: Record<string, unknown>) => ({ output: 'noarg success' }))
+    tools.register({ name: 'noarg_tool', description: 'no args', parameters: {}, category: 'read' }, noargExecutor)
+
+    const emptyArgCall: NonNullable<ChatResponse['toolCalls']>[number] = {
+      id: 'empty-call-1',
+      type: 'function',
+      function: { name: 'noarg_tool', arguments: '' }
+    }
+
+    const adapter = stubAdapter([
+      response({ finishReason: 'tool_calls', toolCalls: [emptyArgCall] }),
+      response({ content: 'done', finishReason: 'stop' })
+    ])
+
+    const runner = makeRunner(adapter, tools)
+    const result = await runner.run('test empty args', () => {})
+
+    expect(result.finishReason).toBe('complete')
+    expect(noargExecutor).toHaveBeenCalledTimes(1)
+    expect((noargExecutor.mock.calls as any)[0][0]).toEqual({})
+  })
+
+  it('truncates individual tool output exceeding 30,000 characters before appending to messages', async () => {
+    const tools = new ToolRegistry()
+    const hugeOutput = 'A'.repeat(45_000)
+    tools.register(
+      { name: 'big_tool', description: 'big', parameters: {}, category: 'read' },
+      async () => ({ output: hugeOutput })
+    )
+
+    const adapter = stubAdapter([
+      response({ finishReason: 'tool_calls', toolCalls: [toolCall('big_tool')] }),
+      response({ content: 'done', finishReason: 'stop' })
+    ])
+
+    const runner = makeRunner(adapter, tools)
+    await runner.run('test big output', () => {})
+
+    const secondRequest = adapter.chat.mock.calls[1][0] as { messages: Array<{ role: string; content: unknown }> }
+    const toolMsg = secondRequest.messages.find((m) => m.role === 'tool')
+    expect(typeof toolMsg?.content).toBe('string')
+    const content = toolMsg?.content as string
+    expect(content.length).toBeLessThan(31_000)
+    expect(content).toContain('[Output truncated: showing first 30,000 of 45,000 characters...]')
+  })
+
+  it('detects repetitive tool call loop and injects system guidance warning after 3 consecutive failures', async () => {
+    const tools = new ToolRegistry()
+    tools.register(
+      { name: 'failing_tool', description: 'fails', parameters: {}, category: 'read' },
+      async () => ({ output: '', error: 'file not found' })
+    )
+
+    const adapter = stubAdapter([
+      response({ finishReason: 'tool_calls', toolCalls: [toolCall('failing_tool', { path: 'same.txt' })] }),
+      response({ finishReason: 'tool_calls', toolCalls: [toolCall('failing_tool', { path: 'same.txt' })] }),
+      response({ finishReason: 'tool_calls', toolCalls: [toolCall('failing_tool', { path: 'same.txt' })] }),
+      response({ content: 'stopped repeating', finishReason: 'stop' })
+    ])
+
+    const runner = makeRunner(adapter, tools)
+    await runner.run('test loop detection', () => {})
+
+    // The 4th chat invocation saw the 3rd tool message with loop guidance attached
+    const fourthRequest = adapter.chat.mock.calls[3][0] as { messages: Array<{ role: string; content: unknown }> }
+    const toolMessages = fourthRequest.messages.filter((m) => m.role === 'tool')
+    expect(toolMessages).toHaveLength(3)
+    const thirdToolMsg = toolMessages[2]
+    expect(thirdToolMsg.content).toContain('System Warning: You have called "failing_tool" with identical arguments 3 times without progress')
+  })
+
+  it('emits real-time streaming deltas when adapter calls onDelta', async () => {
+    const tools = new ToolRegistry()
+    const streamingAdapter: ProviderAdapter = {
+      id: 'streamer',
+      chat: vi.fn(async (_req, onDelta) => {
+        onDelta?.({ thinkingContent: 'let me think...' })
+        onDelta?.({ content: 'first chunk ' })
+        onDelta?.({ content: 'second chunk' })
+        return response({ content: 'first chunk second chunk', thinkingContent: 'let me think...', finishReason: 'stop' })
+      }),
+      abort: vi.fn(),
+      probe: vi.fn(async () => true)
+    }
+
+    const events: RunnerEvent[] = []
+    const runner = makeRunner(streamingAdapter, tools)
+    const result = await runner.run('stream test', (e) => events.push(e))
+
+    expect(result.finishReason).toBe('complete')
+    expect(events.filter((e) => e.type === 'thinking')).toHaveLength(1)
+    expect(events.filter((e) => e.type === 'text')).toHaveLength(2)
+    expect(events.find((e) => e.type === 'thinking')).toEqual({ type: 'thinking', content: 'let me think...' })
+  })
+
+  it('detects repetitive loop regardless of JSON key ordering and injects warning on 3rd failure', async () => {
+    const tools = new ToolRegistry()
+    tools.register(
+      { name: 'flaky_tool', description: 'flaky', parameters: {}, category: 'read' },
+      async () => ({ output: '', error: 'connection refused' })
+    )
+
+    // Call 1: { b: 2, a: 1 }
+    // Call 2: { a: 1, b: 2 } (reversed keys)
+    // Call 3: { b: 2, a: 1 }
+    // Call 4: Stop
+    const adapter = stubAdapter([
+      response({ finishReason: 'tool_calls', toolCalls: [toolCall('flaky_tool', { b: 2, a: 1 })] }),
+      response({ finishReason: 'tool_calls', toolCalls: [toolCall('flaky_tool', { a: 1, b: 2 })] }),
+      response({ finishReason: 'tool_calls', toolCalls: [toolCall('flaky_tool', { b: 2, a: 1 })] }),
+      response({ content: 'stopped', finishReason: 'stop' })
+    ])
+
+    const runner = makeRunner(adapter, tools)
+    await runner.run('test canonical loop detection', () => {})
+
+    const fourthRequest = adapter.chat.mock.calls[3][0] as { messages: Array<{ role: string; content: unknown }> }
+    const toolMessages = fourthRequest.messages.filter((m) => m.role === 'tool')
+    expect(toolMessages).toHaveLength(3)
+    const thirdMsg = toolMessages[2]
+    expect(thirdMsg.content).toContain('System Warning: You have called "flaky_tool" with identical arguments 3 times without progress')
+  })
+
+  it('short-circuits and prevents tool execution on 4th consecutive attempt of failing call', async () => {
+    const tools = new ToolRegistry()
+    const executor = vi.fn(async () => ({ output: '', error: 'bad state' }))
+    tools.register(
+      { name: 'stuck_tool', description: 'stuck', parameters: {}, category: 'read' },
+      executor
+    )
+
+    const adapter = stubAdapter([
+      response({ finishReason: 'tool_calls', toolCalls: [toolCall('stuck_tool', { id: 42 })] }),
+      response({ finishReason: 'tool_calls', toolCalls: [toolCall('stuck_tool', { id: 42 })] }),
+      response({ finishReason: 'tool_calls', toolCalls: [toolCall('stuck_tool', { id: 42 })] }),
+      response({ finishReason: 'tool_calls', toolCalls: [toolCall('stuck_tool', { id: 42 })] }),
+      response({ content: 'finally broke loop', finishReason: 'stop' })
+    ])
+
+    const events: RunnerEvent[] = []
+    const runner = makeRunner(adapter, tools)
+    const result = await runner.run('test short circuit on 4th attempt', (e) => events.push(e))
+
+    expect(result.finishReason).toBe('complete')
+    expect(executor).toHaveBeenCalledTimes(3)
+
+    const fifthRequest = adapter.chat.mock.calls[4][0] as { messages: Array<{ role: string; content: unknown }> }
+    const toolMessages = fifthRequest.messages.filter((m) => m.role === 'tool')
+    expect(toolMessages).toHaveLength(4)
+    expect(toolMessages[3].content).toContain('System Warning: You have called "stuck_tool" with identical arguments 3 times without progress')
+  })
+
+  it('tracks repetitive loop and injects warning for policy broker rejections', async () => {
+    const tools = new ToolRegistry()
+    tools.register(
+      { name: 'fs_write', description: 'write', parameters: {}, category: 'write' },
+      async () => ({ output: 'written' })
+    )
+
+    const adapter = stubAdapter([
+      response({ finishReason: 'tool_calls', toolCalls: [toolCall('fs_write', { path: 'forbidden.txt' })] }),
+      response({ finishReason: 'tool_calls', toolCalls: [toolCall('fs_write', { path: 'forbidden.txt' })] }),
+      response({ finishReason: 'tool_calls', toolCalls: [toolCall('fs_write', { path: 'forbidden.txt' })] }),
+      response({ content: 'stopped trying to write', finishReason: 'stop' })
+    ])
+
+    const runner = makeRunner(adapter, tools, profile({ readOnly: true }))
+    await runner.run('test policy loop detection', () => {})
+
+    const fourthRequest = adapter.chat.mock.calls[3][0] as { messages: Array<{ role: string; content: unknown }> }
+    const toolMessages = fourthRequest.messages.filter((m) => m.role === 'tool')
+    expect(toolMessages).toHaveLength(3)
+    const thirdMsg = toolMessages[2]
+    expect(thirdMsg.content).toContain('System Warning: You have called "fs_write" with identical arguments 3 times without progress')
+  })
+
+  it('returns schema guidance on malformed JSON and rejects arrays', async () => {
+    const tools = new ToolRegistry()
+    tools.register({ name: 'calc', description: 'calculator', parameters: { type: 'object' }, category: 'read' }, async () => ({ output: 'ok' }))
+
+    const arrayCall: NonNullable<ChatResponse['toolCalls']>[number] = {
+      id: 'bad-call-array',
+      type: 'function',
+      function: { name: 'calc', arguments: '[1, 2, 3]' }
+    }
+
+    const adapter = stubAdapter([
+      response({ finishReason: 'tool_calls', toolCalls: [arrayCall] }),
+      response({ content: 'fixed', finishReason: 'stop' })
+    ])
+
+    const events: RunnerEvent[] = []
+    const runner = makeRunner(adapter, tools)
+    const result = await runner.run('test array rejection', (e) => events.push(e))
+
+    expect(result.finishReason).toBe('complete')
+    const toolResult = events.find((e) => e.type === 'tool_result')
+    expect(toolResult).toMatchObject({
+      name: 'calc',
+      error: expect.stringMatching(/Expected a JSON object, but received array/i)
+    })
+    expect(toolResult?.error).toContain('matching the "calc" schema')
+  })
+
+  it('allows runs to proceed past 20 turns when maxTurns is configured higher', async () => {
+    const tools = new ToolRegistry()
+    tools.register(
+      { name: 'step', description: 'step', parameters: {}, category: 'read' },
+      async () => ({ output: 'ok' })
+    )
+
+    const responses: ChatResponse[] = []
+    for (let i = 0; i < 22; i++) {
+      responses.push(response({ finishReason: 'tool_calls', toolCalls: [toolCall('step', { i })] }))
+    }
+    responses.push(response({ content: 'all 22 steps complete', finishReason: 'stop' }))
+
+    const adapter = stubAdapter(responses)
+    const runner = makeRunner(adapter, tools, profile({ maxTurns: 30 }))
+    const result = await runner.run('long run', () => {})
+
+    expect(result.finishReason).toBe('complete')
+    expect(result.turns).toBe(23)
+    expect(result.toolCallCount).toBe(22)
+  })
+})
+
+describe('canonicalJson', () => {
+  it('sorts keys recursively and handles primitives and arrays', () => {
+    expect(canonicalJson({ b: 2, a: 1 })).toBe('{"a":1,"b":2}')
+    expect(canonicalJson({ b: { d: 4, c: 3 }, a: [2, 1] })).toBe('{"a":[2,1],"b":{"c":3,"d":4}}')
+    expect(canonicalJson('hello')).toBe('"hello"')
+    expect(canonicalJson(42)).toBe('42')
+    expect(canonicalJson(null)).toBe('null')
+  })
+})
+
+describe('parseToolArgs', () => {
+  it('parses valid JSON objects', () => {
+    const res = parseToolArgs('{"key": "value"}')
+    expect(res).toEqual({ ok: true, args: { key: 'value' } })
+  })
+
+  it('rejects arrays with informative error message', () => {
+    const res = parseToolArgs('[1, 2, 3]')
+    expect(res.ok).toBe(false)
+    if (!res.ok) {
+      expect(res.raw).toBe('[1, 2, 3]')
+      expect(res.error).toContain('received array')
+    }
+  })
+
+  it('rejects syntax errors with captured error details', () => {
+    const res = parseToolArgs('{ invalid json')
+    expect(res.ok).toBe(false)
+    if (!res.ok) {
+      expect(res.raw).toBe('{ invalid json')
+      expect(res.error.length).toBeGreaterThan(0)
+    }
+  })
+
+  it('rejects primitives and null with descriptive type errors', () => {
+    const res = parseToolArgs('null')
+    expect(res.ok).toBe(false)
+    if (!res.ok) {
+      expect(res.error).toContain('received null')
+    }
   })
 })

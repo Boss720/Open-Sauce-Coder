@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ToolRegistry, type ToolContext } from '../harness/tools/registry'
-import { registerBuiltins } from '../harness/tools/builtins'
+import { registerBuiltins, fallbackGrep } from '../harness/tools/builtins'
 
 function contextFor(directory: string): ToolContext {
   return { directory, agentId: 'a', runId: 'r', abortSignal: new AbortController().signal }
@@ -43,6 +43,14 @@ describe('builtin tool: fs_write', () => {
     expect(result.error).toBeUndefined()
     expect(result.output).toContain('Wrote 13 bytes')
     expect(readFileSync(join(projectDir, 'out.txt'), 'utf8')).toBe('hello harness')
+  })
+
+  it('auto-creates intermediate directories when writing to nested path', async () => {
+    const registry = registryWithBuiltins()
+    const nestedPath = 'nested/sub/dir/test.txt'
+    const result = await registry.execute('fs_write', { path: nestedPath, content: 'nested content' }, contextFor(projectDir))
+    expect(result.error).toBeUndefined()
+    expect(readFileSync(join(projectDir, nestedPath), 'utf8')).toBe('nested content')
   })
 
   it('rejects path escapes via assertSubpath containment', async () => {
@@ -203,3 +211,325 @@ describe('builtin tool: web_fetch', () => {
     expect(result.error).toMatch(/Fetch failed: 404/)
   })
 })
+
+describe('builtin tool: fs_read binary protection', () => {
+  let projectDir: string
+
+  beforeEach(() => {
+    projectDir = mkdtempSync(join(tmpdir(), 'opencode-fs-read-'))
+  })
+
+  afterEach(() => {
+    rmSync(projectDir, { recursive: true, force: true })
+  })
+
+  it('detects binary files with null bytes and avoids dumping raw content', async () => {
+    const registry = registryWithBuiltins()
+    const binaryData = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x0a, 0x1a, 0x0a])
+    writeFileSync(join(projectDir, 'image.png'), binaryData)
+
+    const result = await registry.execute('fs_read', { path: 'image.png' }, contextFor(projectDir))
+    expect(result.error).toBeUndefined()
+    expect(result.output).toContain('[Binary file, size: 8 bytes]')
+  })
+
+  it('detects binary files with null byte at offset 0', async () => {
+    const registry = registryWithBuiltins()
+    const binaryData = Buffer.from([0x00, 0x41, 0x42, 0x43])
+    writeFileSync(join(projectDir, 'zero.bin'), binaryData)
+
+    const result = await registry.execute('fs_read', { path: 'zero.bin' }, contextFor(projectDir))
+    expect(result.error).toBeUndefined()
+    expect(result.output).toContain('[Binary file, size: 4 bytes]')
+  })
+
+  it('detects binary files with null byte within the 8 KB sniff window', async () => {
+    const registry = registryWithBuiltins()
+    const buffer = Buffer.alloc(10000, 0x61)
+    buffer[4096] = 0 // null byte at 4 KB
+    writeFileSync(join(projectDir, 'large.bin'), buffer)
+
+    const result = await registry.execute('fs_read', { path: 'large.bin' }, contextFor(projectDir))
+    expect(result.error).toBeUndefined()
+    expect(result.output).toContain('[Binary file, size: 10000 bytes]')
+  })
+
+  it('reads UTF-8 text files cleanly without false binary detection', async () => {
+    const registry = registryWithBuiltins()
+    const text = 'Hello world! 🚀 UTF-8 characters: äöü, € and emojis work fine.\nLine 2.'
+    writeFileSync(join(projectDir, 'test.txt'), text, 'utf8')
+
+    const result = await registry.execute('fs_read', { path: 'test.txt' }, contextFor(projectDir))
+    expect(result.error).toBeUndefined()
+    expect(result.output).toBe(text)
+  })
+})
+
+describe('builtin tool: fs_patch', () => {
+  let projectDir: string
+
+  beforeEach(() => {
+    projectDir = mkdtempSync(join(tmpdir(), 'opencode-fs-patch-'))
+    writeFileSync(join(projectDir, 'sample.txt'), 'const foo = 1;\nconst bar = 2;\n')
+  })
+
+  afterEach(() => {
+    rmSync(projectDir, { recursive: true, force: true })
+  })
+
+  it('successfully patches a unique target block', async () => {
+    const registry = registryWithBuiltins()
+    const result = await registry.execute(
+      'fs_patch',
+      { path: 'sample.txt', target: 'const bar = 2;', replacement: 'const bar = 42;' },
+      contextFor(projectDir)
+    )
+    expect(result.error).toBeUndefined()
+    expect(result.output).toBe('Successfully patched sample.txt')
+    expect(readFileSync(join(projectDir, 'sample.txt'), 'utf8')).toBe('const foo = 1;\nconst bar = 42;\n')
+  })
+
+  it('returns error when target block is not found', async () => {
+    const registry = registryWithBuiltins()
+    const result = await registry.execute(
+      'fs_patch',
+      { path: 'sample.txt', target: 'nonexistent', replacement: 'replacement' },
+      contextFor(projectDir)
+    )
+    expect(result.error).toContain('Target text not found')
+  })
+
+  it('returns error when target block is not found even with allowMultiple', async () => {
+    const registry = registryWithBuiltins()
+    const result = await registry.execute(
+      'fs_patch',
+      { path: 'sample.txt', target: 'nonexistent', replacement: 'replacement', allowMultiple: true },
+      contextFor(projectDir)
+    )
+    expect(result.error).toContain('Target text not found')
+  })
+
+  it('returns error when target block appears multiple times without allowMultiple', async () => {
+    writeFileSync(join(projectDir, 'dup.txt'), 'item\nitem\n')
+    const registry = registryWithBuiltins()
+    const result = await registry.execute(
+      'fs_patch',
+      { path: 'dup.txt', target: 'item', replacement: 'unique' },
+      contextFor(projectDir)
+    )
+    expect(result.error).toContain('appears 2 times')
+    expect(result.error).toContain('must be unique to patch safely')
+    expect(readFileSync(join(projectDir, 'dup.txt'), 'utf8')).toBe('item\nitem\n')
+  })
+
+  it('replaces all occurrences when allowMultiple is true and reports count', async () => {
+    writeFileSync(join(projectDir, 'multi.txt'), 'foo bar foo baz foo')
+    const registry = registryWithBuiltins()
+    const result = await registry.execute(
+      'fs_patch',
+      { path: 'multi.txt', target: 'foo', replacement: 'qux', allowMultiple: true },
+      contextFor(projectDir)
+    )
+    expect(result.error).toBeUndefined()
+    expect(result.output).toBe('Successfully patched 3 occurrences in multi.txt')
+    expect(readFileSync(join(projectDir, 'multi.txt'), 'utf8')).toBe('qux bar qux baz qux')
+  })
+
+  it('handles single occurrence when allowMultiple is true and reports count', async () => {
+    const registry = registryWithBuiltins()
+    const result = await registry.execute(
+      'fs_patch',
+      { path: 'sample.txt', target: 'const foo = 1;', replacement: 'const foo = 99;', allowMultiple: true },
+      contextFor(projectDir)
+    )
+    expect(result.error).toBeUndefined()
+    expect(result.output).toBe('Successfully patched 1 occurrence in sample.txt')
+    expect(readFileSync(join(projectDir, 'sample.txt'), 'utf8')).toBe('const foo = 99;\nconst bar = 2;\n')
+  })
+
+  it('returns error when target is empty string', async () => {
+    const registry = registryWithBuiltins()
+    const result = await registry.execute(
+      'fs_patch',
+      { path: 'sample.txt', target: '', replacement: 'replacement' },
+      contextFor(projectDir)
+    )
+    expect(result.error).toContain('Target string must not be empty')
+  })
+
+  it('correctly preserves dollar signs ($&, $1, $$) without regex substitution corruption', async () => {
+    writeFileSync(join(projectDir, 'dollar.txt'), 'const x = old;\n')
+    const registry = registryWithBuiltins()
+    const result = await registry.execute(
+      'fs_patch',
+      { path: 'dollar.txt', target: 'old', replacement: '$$1 + $& + $\'' },
+      contextFor(projectDir)
+    )
+    expect(result.error).toBeUndefined()
+    expect(readFileSync(join(projectDir, 'dollar.txt'), 'utf8')).toBe('const x = $$1 + $& + $\';\n')
+  })
+
+  it('rejects path escape attempts in fs_patch', async () => {
+    const registry = registryWithBuiltins()
+    const result = await registry.execute(
+      'fs_patch',
+      { path: '../outside.txt', target: 'foo', replacement: 'bar' },
+      contextFor(projectDir)
+    )
+    expect(result.error).toMatch(/project directory|inside/i)
+  })
+})
+
+describe('builtin tool: grep fallback', () => {
+  let projectDir: string
+
+  beforeEach(() => {
+    projectDir = mkdtempSync(join(tmpdir(), 'opencode-grep-'))
+    writeFileSync(
+      join(projectDir, 'code.ts'),
+      'function calculateTax() { return 10 }\nfunction calculateDiscount() { return 5 }\n'
+    )
+    writeFileSync(join(projectDir, 'notes.md'), 'Tax calculation overview\n')
+  })
+
+  afterEach(() => {
+    rmSync(projectDir, { recursive: true, force: true })
+  })
+
+  it('finds matches in project files', async () => {
+    const registry = registryWithBuiltins()
+    const result = await registry.execute('grep', { pattern: 'calculateTax' }, contextFor(projectDir))
+    expect(result.error).toBeUndefined()
+    expect(result.output).toContain('code.ts')
+    expect(result.output).toContain('calculateTax')
+  })
+
+  it('filters results by include pattern', async () => {
+    const registry = registryWithBuiltins()
+    const result = await registry.execute(
+      'grep',
+      { pattern: 'Tax', include: '*.ts' },
+      contextFor(projectDir)
+    )
+    expect(result.error).toBeUndefined()
+    expect(result.output).toContain('code.ts')
+    expect(result.output).not.toContain('notes.md')
+  })
+
+  it('skips ignored directories like node_modules', async () => {
+    mkdirSync(join(projectDir, 'node_modules', 'dep'), { recursive: true })
+    writeFileSync(join(projectDir, 'node_modules', 'dep', 'dep.ts'), 'function calculateTax() {}\n')
+
+    const registry = registryWithBuiltins()
+    const result = await registry.execute('grep', { pattern: 'calculateTax' }, contextFor(projectDir))
+    expect(result.error).toBeUndefined()
+    expect(result.output).toContain('code.ts')
+    expect(result.output).not.toContain('node_modules')
+  })
+
+  it('skips binary files containing null bytes', async () => {
+    const binary = Buffer.from('function calculateTax() \0 binary content')
+    writeFileSync(join(projectDir, 'binary.bin'), binary)
+
+    const registry = registryWithBuiltins()
+    const result = await registry.execute('grep', { pattern: 'calculateTax' }, contextFor(projectDir))
+    expect(result.error).toBeUndefined()
+    expect(result.output).toContain('code.ts')
+    expect(result.output).not.toContain('binary.bin')
+  })
+
+  it('searches within a specific subpath', async () => {
+    mkdirSync(join(projectDir, 'sub'), { recursive: true })
+    writeFileSync(join(projectDir, 'sub', 'inner.ts'), 'function innerCalculateTax() {}\n')
+
+    const registry = registryWithBuiltins()
+    const result = await registry.execute('grep', { pattern: 'calculateTax', path: 'sub' }, contextFor(projectDir))
+    expect(result.error).toBeUndefined()
+    expect(result.output).toContain('inner.ts')
+    expect(result.output).not.toContain('code.ts:1')
+  })
+
+  it('returns clean empty output when no matches are found', async () => {
+    const registry = registryWithBuiltins()
+    const result = await registry.execute('grep', { pattern: 'nonexistent_pattern_12345' }, contextFor(projectDir))
+    expect(result.error).toBeUndefined()
+    expect(result.output).toBe('')
+  })
+
+  it('directly verifies fallbackGrep with regex, pattern escaping, and cancellation', async () => {
+    const out = await fallbackGrep(projectDir, projectDir, 'calculateDiscount')
+    expect(out).toContain('code.ts:2:function calculateDiscount')
+
+    // Pattern with special regex characters
+    const specialOut = await fallbackGrep(projectDir, projectDir, 'calculateDiscount()')
+    expect(specialOut).toContain('code.ts:2:function calculateDiscount() { return 5 }')
+
+    // Aborted signal returns early
+    const controller = new AbortController()
+    controller.abort()
+    const cancelled = await fallbackGrep(projectDir, projectDir, 'calculateDiscount', undefined, controller.signal)
+    expect(cancelled).toBe('')
+  })
+})
+
+describe('builtin tool: shell', () => {
+  let projectDir: string
+
+  beforeEach(() => {
+    projectDir = mkdtempSync(join(tmpdir(), 'opencode-shell-'))
+  })
+
+  afterEach(async () => {
+    for (let i = 0; i < 5; i++) {
+      try {
+        rmSync(projectDir, { recursive: true, force: true })
+        break
+      } catch {
+        await new Promise((r) => setTimeout(r, 100))
+      }
+    }
+  })
+
+  it('executes a basic command and captures output', async () => {
+    const registry = registryWithBuiltins()
+    const isWin = process.platform === 'win32'
+    const command = isWin ? 'echo hello shell' : 'echo "hello shell"'
+    const result = await registry.execute('shell', { command }, contextFor(projectDir))
+    expect(result.error).toBeUndefined()
+    expect(result.output).toContain('hello shell')
+  })
+
+  it('respects cwd within project containment', async () => {
+    mkdirSync(join(projectDir, 'subfolder'), { recursive: true })
+    writeFileSync(join(projectDir, 'subfolder', 'marker.txt'), 'sub-marker')
+    const registry = registryWithBuiltins()
+    const isWin = process.platform === 'win32'
+    const command = isWin ? 'type marker.txt' : 'cat marker.txt'
+    const result = await registry.execute('shell', { command, cwd: 'subfolder' }, contextFor(projectDir))
+    expect(result.error).toBeUndefined()
+    expect(result.output).toContain('sub-marker')
+  })
+
+  it('rejects cwd outside project containment', async () => {
+    const registry = registryWithBuiltins()
+    const result = await registry.execute('shell', { command: 'echo x', cwd: '../outside' }, contextFor(projectDir))
+    expect(result.error).toMatch(/project directory|inside/i)
+  })
+
+  it('handles abort signal cancellation', async () => {
+    const registry = registryWithBuiltins()
+    const controller = new AbortController()
+    controller.abort()
+    const context: ToolContext = {
+      directory: projectDir,
+      agentId: 'a',
+      runId: 'r',
+      abortSignal: controller.signal
+    }
+    const isWin = process.platform === 'win32'
+    const command = isWin ? 'ping -n 5 127.0.0.1' : 'sleep 5'
+    const result = await registry.execute('shell', { command }, context)
+    expect(result.error).toBeDefined()
+  })
+})
+

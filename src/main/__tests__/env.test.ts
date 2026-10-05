@@ -4,7 +4,9 @@ import { ALLOWLIST, linkedProviderIDs } from '../env'
 describe('BYOK environment boundary', () => {
   it('allows only supported provider credential variables', () => {
     expect([...ALLOWLIST].sort()).toEqual([
+      'ANTHROPIC_API_KEY',
       'CEREBRAS_API_KEY',
+      'DEEPSEEK_API_KEY',
       'GEMINI_API_KEY',
       'GOOGLE_API_KEY',
       'GOOGLE_GENERATIVE_AI_API_KEY',
@@ -12,6 +14,7 @@ describe('BYOK environment boundary', () => {
       'MISTRAL_API_KEY',
       'MOONSHOT_API_KEY',
       'NANOGPT_API_KEY',
+      'OPENAI_API_KEY',
       'OPENROUTER_API_KEY',
       'XAI_API_KEY'
     ])
@@ -20,7 +23,7 @@ describe('BYOK environment boundary', () => {
 
 describe('linkedProviderIDs', () => {
   it('authorizes known providers from non-secret API-key presence only', () => {
-    expect(linkedProviderIDs({ OPENAI_API_KEY: 'sk-test', GROQ_API_KEY: 'gsk-test', NANOGPT_API_KEY: 'nano-test' })).toEqual([
+    expect(linkedProviderIDs({ UNKNOWN_API_KEY: 'sk-test', GROQ_API_KEY: 'gsk-test', NANOGPT_API_KEY: 'nano-test' })).toEqual([
       'groq',
       'nanogpt'
     ])

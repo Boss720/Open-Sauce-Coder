@@ -1,11 +1,56 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { JSX } from 'react'
 import { useStore } from '../lib/store'
-import type { AgentProfile, RunnerResult } from '../lib/types'
+import type { AgentProfile, KeyRow, RunnerResult } from '../lib/types'
 import './HarnessPanel.css'
 
 /** Harness providers supported by the main-process registry (providers/registry.ts). */
-const PROVIDERS = ['nanogpt', 'google'] as const
+const PROVIDER_OPTIONS = [
+  { value: 'anthropic', label: 'Anthropic (Claude)' },
+  { value: 'openai', label: 'OpenAI (GPT-4o / o-series)' },
+  { value: 'google', label: 'Google Gemini' },
+  { value: 'deepseek', label: 'DeepSeek' },
+  { value: 'groq', label: 'Groq (Llama / Mixtral)' },
+  { value: 'nanogpt', label: 'NanoGPT' },
+  { value: 'openrouter', label: 'OpenRouter' },
+  { value: 'mistral', label: 'Mistral AI' },
+  { value: 'xai', label: 'xAI (Grok)' },
+  { value: 'cerebras', label: 'Cerebras' },
+  { value: 'moonshot', label: 'Moonshot (Kimi)' },
+  { value: 'custom', label: 'Custom (OpenAI-compatible)' }
+] as const
+
+/** Recommended model presets per provider for quick selection in profile editor. */
+const MODEL_PRESETS: Record<string, string[]> = {
+  anthropic: ['claude-3-7-sonnet-latest', 'claude-3-5-haiku-latest'],
+  openai: ['gpt-4o', 'gpt-4o-mini', 'o3-mini'],
+  google: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+  deepseek: ['deepseek-chat', 'deepseek-reasoner'],
+  groq: ['llama-3.3-70b-versatile', 'mixtral-8x7b-32768'],
+  nanogpt: ['openai/gpt-4o', 'anthropic/claude-3.5-sonnet'],
+  openrouter: ['anthropic/claude-3.7-sonnet', 'deepseek/deepseek-r1'],
+  mistral: ['mistral-large-latest', 'codestral-latest'],
+  xai: ['grok-2-latest'],
+  cerebras: ['llama3.3-70b'],
+  moonshot: ['moonshot-v1-32k'],
+  custom: []
+}
+
+function getToolIconAndCategory(name: string): { icon: string; className: string } {
+  if (name.startsWith('fs_read') || name === 'grep' || name === 'find_by_name') {
+    return { icon: '📖', className: 'harness__event--tool-read' }
+  }
+  if (name.startsWith('fs_write') || name === 'fs_patch') {
+    return { icon: '✏️', className: 'harness__event--tool-write' }
+  }
+  if (name === 'shell' || name === 'bash' || name === 'terminal') {
+    return { icon: '💻', className: 'harness__event--tool-shell' }
+  }
+  if (name.includes('web') || name.includes('fetch') || name.includes('search')) {
+    return { icon: '🌐', className: 'harness__event--tool-web' }
+  }
+  return { icon: '⚙', className: 'harness__event--tool-generic' }
+}
 
 /** Editor draft: numeric fields stay strings until save, so empty means "unset". */
 type Draft = {
@@ -13,6 +58,7 @@ type Draft = {
   name: string
   description: string
   provider: string
+  baseUrl: string
   model: string
   temperature: string
   maxTokens: string
@@ -30,6 +76,7 @@ const EMPTY_DRAFT: Draft = {
   name: '',
   description: '',
   provider: 'nanogpt',
+  baseUrl: '',
   model: '',
   temperature: '',
   maxTokens: '',
@@ -58,6 +105,7 @@ function draftFrom(profile: AgentProfile): Draft {
     name: profile.name,
     description: profile.description ?? '',
     provider: profile.provider,
+    baseUrl: profile.baseUrl ?? '',
     model: profile.model,
     temperature: profile.temperature === undefined ? '' : String(profile.temperature),
     maxTokens: profile.maxTokens === undefined ? '' : String(profile.maxTokens),
@@ -98,6 +146,10 @@ function draftToProfile(draft: Draft): AgentProfile {
   const description = draft.description.trim()
   if (description) profile.description = description
   else delete profile.description
+
+  const baseUrl = draft.baseUrl.trim()
+  if (baseUrl) profile.baseUrl = baseUrl
+  else delete profile.baseUrl
 
   const temperature = parseNum(draft.temperature)
   if (temperature !== undefined) profile.temperature = temperature
@@ -166,6 +218,7 @@ export function HarnessPanel({ compact = false }: { compact?: boolean }): JSX.El
   const [draftLocked, setDraftLocked] = useState(false)
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const [testResults, setTestResults] = useState<Record<string, TestState>>({})
+  const [storedKeys, setStoredKeys] = useState<KeyRow[]>([])
   const [runProfileId, setRunProfileId] = useState('')
   const [task, setTask] = useState('')
   const [starting, setStarting] = useState(false)
@@ -176,7 +229,24 @@ export function HarnessPanel({ compact = false }: { compact?: boolean }): JSX.El
   useEffect(() => {
     void loadHarnessProfiles()
     void loadHarnessTools()
+    const fetchKeys = async (): Promise<void> => {
+      try {
+        if (typeof window !== 'undefined' && window.api?.keys?.list) {
+          const list = await window.api.keys.list()
+          setStoredKeys(list)
+        }
+      } catch {
+        // bridge not available or failed
+      }
+    }
+    void fetchKeys()
   }, [loadHarnessProfiles, loadHarnessTools])
+
+  const hasKey = (providerId: string): boolean => {
+    if (providerId === 'custom') return true
+    const row = storedKeys.find((k) => k.providerID === providerId)
+    return Boolean(row)
+  }
 
   const activeRun = useMemo(
     () => runs.find((run) => run.id === activeRunId) ?? null,
@@ -471,15 +541,25 @@ export function HarnessPanel({ compact = false }: { compact?: boolean }): JSX.El
               </label>
               <div className="harness__field-row">
                 <label className="harness__field">
-                  <span>Provider</span>
+                  <span className="harness__field-header">
+                    <span>Provider</span>
+                    {!hasKey(draft.provider) && (
+                      <span
+                        className="harness__badge harness__badge--warning"
+                        title="No API key found in OpenCode storage or environment. Configure it in Settings > Providers."
+                      >
+                        ⚠️ Key missing in Settings &gt; Providers
+                      </span>
+                    )}
+                  </span>
                   <select
                     value={draft.provider}
                     disabled={draftLocked}
                     onChange={(e) => patchDraft({ provider: e.target.value })}
                   >
-                    {PROVIDERS.map((p) => (
-                      <option key={p} value={p}>
-                        {p}
+                    {PROVIDER_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
                       </option>
                     ))}
                   </select>
@@ -490,11 +570,42 @@ export function HarnessPanel({ compact = false }: { compact?: boolean }): JSX.El
                     type="text"
                     value={draft.model}
                     disabled={draftLocked}
-                    placeholder="google/gemini-2.5-pro"
+                    placeholder="e.g. gpt-4o, claude-3-7-sonnet-latest, gemini-2.5-pro"
                     onChange={(e) => patchDraft({ model: e.target.value })}
                   />
+                  {MODEL_PRESETS[draft.provider] && MODEL_PRESETS[draft.provider].length > 0 && (
+                    <div className="harness__presets">
+                      <span className="harness__muted">Presets:</span>
+                      {MODEL_PRESETS[draft.provider].map((preset) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          className="harness__btn harness__btn--xs"
+                          disabled={draftLocked}
+                          onClick={() => patchDraft({ model: preset })}
+                        >
+                          {preset}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </label>
               </div>
+              {draft.provider === 'custom' && (
+                <label className="harness__field">
+                  <span>Base URL</span>
+                  <input
+                    type="url"
+                    value={draft.baseUrl}
+                    disabled={draftLocked}
+                    placeholder="http://localhost:11434/v1 (Ollama) or http://localhost:1234/v1 (LM Studio)"
+                    onChange={(e) => patchDraft({ baseUrl: e.target.value })}
+                  />
+                  <span className="harness__muted">
+                    OpenAI-compatible server endpoint (e.g. Ollama, LM Studio, vLLM).
+                  </span>
+                </label>
+              )}
               <div className="harness__field-row">
                 <label className="harness__field">
                   <span>Temperature</span>
@@ -694,17 +805,18 @@ export function HarnessPanel({ compact = false }: { compact?: boolean }): JSX.El
                 if (entry.kind === 'thinking') {
                   return (
                     <details key={i} className="harness__event harness__event--thinking">
-                      <summary>Thinking…</summary>
+                      <summary>Thinking ({entry.text.length} chars)…</summary>
                       <pre>{entry.text}</pre>
                     </details>
                   )
                 }
                 if (entry.kind === 'tool_call') {
+                  const { icon, className } = getToolIconAndCategory(entry.name)
                   return (
-                    <details key={i} className="harness__event harness__event--tool">
+                    <details key={i} className={`harness__event harness__event--tool ${className}`}>
                       <summary>
                         <span className="harness__tool-icon" aria-hidden="true">
-                          ⚙
+                          {icon}
                         </span>
                         <span className="harness__tool-name">{entry.name}</span>
                       </summary>
@@ -713,18 +825,19 @@ export function HarnessPanel({ compact = false }: { compact?: boolean }): JSX.El
                   )
                 }
                 if (entry.kind === 'tool_result') {
+                  const { icon, className } = getToolIconAndCategory(entry.name)
                   return (
                     <details
                       key={i}
                       className={
                         entry.error
-                          ? 'harness__event harness__event--tool harness__event--error'
-                          : 'harness__event harness__event--tool'
+                          ? `harness__event harness__event--tool harness__event--error ${className}`
+                          : `harness__event harness__event--tool ${className}`
                       }
                     >
                       <summary>
                         <span className="harness__tool-icon" aria-hidden="true">
-                          ⤷
+                          ⤷ {icon}
                         </span>
                         <span className="harness__tool-name">{entry.name}</span>
                         {entry.error && <span className="harness__tag harness__tag--error">error</span>}

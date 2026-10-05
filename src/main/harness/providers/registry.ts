@@ -7,6 +7,8 @@
 import type { ProviderAdapter } from './adapter'
 import { NanoGptAdapter } from './nanogpt'
 import { GeminiAdapter } from './gemini'
+import { AnthropicAdapter } from './anthropic'
+import { OpenAiAdapter } from './openai'
 import { OpenAiCompatibleAdapter, OPENAI_COMPATIBLE_CONFIGS } from './openaiCompatible'
 
 export class ProviderRegistry {
@@ -53,12 +55,18 @@ export class ProviderRegistry {
         return new NanoGptAdapter()
       case 'google':
         return new GeminiAdapter()
+      case 'anthropic':
+        return new AnthropicAdapter()
+      case 'openai':
+        return new OpenAiAdapter()
       case 'groq':
       case 'mistral':
       case 'openrouter':
+      case 'deepseek':
       case 'moonshot':
       case 'xai':
-      case 'cerebras': {
+      case 'cerebras':
+      case 'custom': {
         const config = OPENAI_COMPATIBLE_CONFIGS[providerId]
         if (!config) throw new Error(`Missing OpenAI-compatible configuration for: ${providerId}`)
         return new OpenAiCompatibleAdapter(config)
@@ -75,12 +83,16 @@ export class ProviderRegistry {
 const SUPPORTED_PROVIDERS = new Set([
   'nanogpt',
   'google',
+  'anthropic',
+  'openai',
+  'openrouter',
   'groq',
   'mistral',
-  'openrouter',
+  'deepseek',
   'moonshot',
   'xai',
-  'cerebras'
+  'cerebras',
+  'custom'
 ])
 
 /** Main-process singleton instance. */

@@ -312,7 +312,10 @@ export async function testKey(
   const scheme = entry.test.authScheme ? `${entry.test.authScheme} ` : ''
   try {
     const res = await fetch(entry.test.url, {
-      headers: { [entry.test.authHeader]: `${scheme}${key}` },
+      headers: {
+        [entry.test.authHeader]: `${scheme}${key}`,
+        ...(entry.test.extraHeaders ?? {})
+      },
       signal: AbortSignal.timeout(5000)
     })
     return { ok: res.ok, status: res.status }

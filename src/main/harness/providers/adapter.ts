@@ -54,6 +54,7 @@ export type ChatRequest = {
   routingSuffix?: string
   caching?: boolean
   billingRoute?: 'subscription' | 'standard'
+  baseUrl?: string
 }
 
 export type ChatResponse = {
@@ -77,8 +78,8 @@ export type ChatDelta = {
 export type ProviderAdapter = {
   readonly id: string
 
-  /** Send a chat completion request with tool definitions. */
-  chat(request: ChatRequest): Promise<ChatResponse>
+  /** Send a chat completion request with tool definitions and optional streaming delta callbacks. */
+  chat(request: ChatRequest, onDelta?: (delta: ChatDelta) => void): Promise<ChatResponse>
 
   /** Abort an in-flight request by its correlation id. */
   abort(requestId: string): void

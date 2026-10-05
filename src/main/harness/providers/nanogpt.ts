@@ -5,16 +5,21 @@
  * `/api/v1/chat/completions` endpoint (standard billing) or
  * `/api/subscription/v1/chat/completions` (subscription billing).
  *
+ * Supports tool calling, reasoning tokens, and streaming SSE.
+ *
  * SECURITY: the API key is resolved transiently via `loadByokEnv()` — never
  * cached, never logged, never returned across IPC. All error messages are
  * routed through `safeError` before leaving this module.
  */
 import { loadByokEnv } from '../../keys'
 import { nanogptLimiter } from '../../nanogptLimiter'
+import { ThinkTagStreamer, extractThinkTags } from './thinkTagStreamer'
 import type {
   ProviderAdapter,
   ChatRequest,
   ChatResponse,
+  ChatDelta,
+  ChatMessage,
   ToolCall
 } from './adapter'
 
@@ -104,22 +109,51 @@ function extractUsage(payload: Record<string, unknown>): { input: number; output
   return reasoning !== undefined ? { input, output, reasoning } : { input, output }
 }
 
+function sanitizeMessages(messages: ChatMessage[]): Record<string, unknown>[] {
+  return messages.map((m) => {
+    const role = m.role
+    const content = m.content ?? ''
+
+    if (role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
+      return {
+        role: 'assistant',
+        content,
+        tool_calls: m.tool_calls
+      }
+    }
+
+    if (role === 'tool') {
+      return {
+        role: 'tool',
+        content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? ''),
+        tool_call_id: m.tool_call_id
+      }
+    }
+
+    return {
+      role,
+      content
+    }
+  })
+}
+
 export class NanoGptAdapter implements ProviderAdapter {
   readonly id = 'nanogpt'
 
   private inflight = new Map<string, AbortController>()
 
-  async chat(request: ChatRequest): Promise<ChatResponse> {
+  async chat(request: ChatRequest, onDelta?: (delta: ChatDelta) => void): Promise<ChatResponse> {
     const key = getApiKey()
     const path = request.billingRoute === 'standard' ? STANDARD_PATH : SUBSCRIPTION_PATH
     const modelId = request.routingSuffix
       ? `${request.model}${request.routingSuffix}`
       : request.model
 
+    const isStreaming = Boolean(onDelta)
     const body: Record<string, unknown> = {
       model: modelId,
-      messages: request.messages,
-      stream: false
+      messages: sanitizeMessages(request.messages),
+      stream: isStreaming
     }
     if (request.tools && request.tools.length > 0) body.tools = request.tools
     if (request.temperature !== undefined) body.temperature = request.temperature
@@ -136,7 +170,7 @@ export class NanoGptAdapter implements ProviderAdapter {
 
     const release = await nanogptLimiter.acquireSlot()
     try {
-      return await this.fetchWithRetry(path, key, body, request.requestId, abort)
+      return await this.fetchWithRetry(path, key, body, request.requestId, abort, onDelta)
     } finally {
       release()
       this.inflight.delete(request.requestId)
@@ -176,7 +210,8 @@ export class NanoGptAdapter implements ProviderAdapter {
     key: string,
     body: Record<string, unknown>,
     requestId: string,
-    abort: AbortController
+    abort: AbortController,
+    onDelta?: (delta: ChatDelta) => void
   ): Promise<ChatResponse> {
     let attempt = 0
     for (;;) {
@@ -216,6 +251,141 @@ export class NanoGptAdapter implements ProviderAdapter {
         ))
       }
 
+      // Handle streaming SSE response
+      const contentType = res.headers.get('content-type') ?? ''
+      if (body.stream && res.body && (contentType.includes('event-stream') || !contentType.includes('json'))) {
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder('utf-8')
+        let buffer = ''
+
+        let fullText = ''
+        let fullThinking = ''
+        let responseId = requestId
+        let finishReason: ChatResponse['finishReason'] = 'stop'
+        let inputTokens = 0
+        let outputTokens = 0
+        let reasoningTokens: number | undefined
+
+        const toolCallsMap = new Map<number, { id: string; name: string; args: string }>()
+        const thinkStreamer = new ThinkTagStreamer()
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            buffer += decoder.decode(value, { stream: true })
+            const lines = buffer.split(/\r?\n/)
+            buffer = lines.pop() ?? ''
+
+            for (const line of lines) {
+              const trimmed = line.trim()
+              if (!trimmed || !trimmed.startsWith('data:')) continue
+              const dataStr = trimmed.slice(5).trim()
+              if (dataStr === '[DONE]') continue
+
+              let chunk: Record<string, unknown>
+              try {
+                chunk = JSON.parse(dataStr) as Record<string, unknown>
+              } catch {
+                continue
+              }
+
+              if (typeof chunk.id === 'string') responseId = chunk.id
+
+              if (isRecord(chunk.usage)) {
+                if (typeof chunk.usage.prompt_tokens === 'number') inputTokens = chunk.usage.prompt_tokens
+                if (typeof chunk.usage.completion_tokens === 'number') outputTokens = chunk.usage.completion_tokens
+                if (typeof chunk.usage.reasoning_tokens === 'number') reasoningTokens = chunk.usage.reasoning_tokens
+              }
+
+              const choices = Array.isArray(chunk.choices) ? chunk.choices : []
+              if (choices.length === 0) continue
+
+              const choice = choices[0]
+              if (!isRecord(choice)) continue
+
+              if (typeof choice.finish_reason === 'string') {
+                const fr = choice.finish_reason
+                if (fr === 'tool_calls') finishReason = 'tool_calls'
+                else if (fr === 'length') finishReason = 'length'
+                else if (fr === 'stop') finishReason = 'stop'
+              }
+
+              const delta = isRecord(choice.delta) ? choice.delta : {}
+
+              if (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0) {
+                fullThinking += delta.reasoning_content
+                onDelta?.({ thinkingContent: delta.reasoning_content })
+              }
+
+              if (typeof delta.content === 'string' && delta.content.length > 0) {
+                const { text: processedText, thinking: processedThinking } = thinkStreamer.process(delta.content, onDelta)
+                fullText += processedText
+                fullThinking += processedThinking
+              }
+
+              if (Array.isArray(delta.tool_calls)) {
+                for (const tcDelta of delta.tool_calls) {
+                  if (!isRecord(tcDelta)) continue
+                  const idx = typeof tcDelta.index === 'number' ? tcDelta.index : 0
+                  const existing = toolCallsMap.get(idx) ?? { id: '', name: '', args: '' }
+
+                  if (typeof tcDelta.id === 'string' && tcDelta.id.length > 0) {
+                    existing.id = tcDelta.id
+                  }
+                  if (isRecord(tcDelta.function)) {
+                    if (typeof tcDelta.function.name === 'string') {
+                      existing.name += tcDelta.function.name
+                    }
+                    if (typeof tcDelta.function.arguments === 'string') {
+                      existing.args += tcDelta.function.arguments
+                    }
+                  }
+
+                  toolCallsMap.set(idx, existing)
+                }
+              }
+            }
+          }
+
+          const flushed = thinkStreamer.flush(onDelta)
+          fullText += flushed.text
+          fullThinking += flushed.thinking
+        } finally {
+          reader.releaseLock()
+        }
+
+        const toolCalls: ToolCall[] = []
+        for (const item of toolCallsMap.values()) {
+          if (item.name) {
+            toolCalls.push({
+              id: item.id || `call_${toolCalls.length}`,
+              type: 'function',
+              function: {
+                name: item.name,
+                arguments: item.args || '{}'
+              }
+            })
+          }
+        }
+
+        if (toolCalls.length > 0) finishReason = 'tool_calls'
+
+        const usage = reasoningTokens !== undefined
+          ? { input: inputTokens, output: outputTokens, reasoning: reasoningTokens }
+          : { input: inputTokens, output: outputTokens }
+
+        return {
+          id: responseId,
+          content: fullText,
+          toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+          finishReason,
+          usage,
+          thinkingContent: fullThinking.length > 0 ? fullThinking : undefined
+        }
+      }
+
+      // Handle non-streaming JSON response
       let payload: unknown
       try {
         payload = await res.json()
@@ -229,10 +399,20 @@ export class NanoGptAdapter implements ProviderAdapter {
       const finishReason = toolCalls ? 'tool_calls' : extractFinishReason(choices)
 
       let content = ''
+      let thinkingContent: string | undefined
       if (choices.length > 0) {
         const choice = choices[0] as Record<string, unknown>
         const message = isRecord(choice.message) ? choice.message : {}
-        if (typeof message.content === 'string') content = message.content
+        if (typeof message.reasoning_content === 'string') {
+          thinkingContent = message.reasoning_content
+        }
+        if (typeof message.content === 'string') {
+          const extracted = extractThinkTags(message.content)
+          content = extracted.text
+          if (extracted.thinking) {
+            thinkingContent = (thinkingContent ? `${thinkingContent}\n` : '') + extracted.thinking
+          }
+        }
       }
 
       return {
@@ -240,7 +420,8 @@ export class NanoGptAdapter implements ProviderAdapter {
         content,
         toolCalls,
         finishReason,
-        usage: extractUsage(payload)
+        usage: extractUsage(payload),
+        thinkingContent
       }
     }
   }

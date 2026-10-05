@@ -22,6 +22,7 @@ import type {
   ProviderAdapter,
   ChatRequest,
   ChatResponse,
+  ChatDelta,
   ChatMessage,
   FunctionDefinition,
   ToolCall
@@ -48,11 +49,60 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** Convert our ChatMessage[] to Gemini SDK Content[]. */
-function toGeminiContents(messages: ChatMessage[]): { systemInstruction?: string; contents: Content[] } {
+export function toGeminiContents(
+  messages: ChatMessage[],
+  tools?: FunctionDefinition[]
+): { systemInstruction?: string; contents: Content[] } {
   let systemInstruction: string | undefined
   const contents: Content[] = []
 
+  const declaredToolNames = new Set<string>()
+  if (tools) {
+    for (const t of tools) {
+      if (t.function?.name) {
+        declaredToolNames.add(t.function.name)
+      }
+    }
+  }
+
+  const toolCallNames = new Map<string, string>()
   for (const message of messages) {
+    if (message.tool_calls) {
+      for (const tc of message.tool_calls) {
+        if (tc.id) {
+          toolCallNames.set(tc.id, tc.function.name)
+        }
+        if (tc.function?.name) {
+          toolCallNames.set(tc.function.name, tc.function.name)
+        }
+      }
+    }
+  }
+
+  function resolveFunctionName(callId?: string, explicitName?: string): string {
+    if (callId) {
+      const fromMap = toolCallNames.get(callId)
+      if (fromMap) return fromMap
+    }
+    if (explicitName && (declaredToolNames.has(explicitName) || declaredToolNames.size === 0)) {
+      return explicitName
+    }
+    if (callId) {
+      if (declaredToolNames.has(callId)) return callId
+      for (const declared of declaredToolNames) {
+        if (callId.includes(declared)) return declared
+      }
+    }
+    if (explicitName) return explicitName
+    if (declaredToolNames.size === 1) {
+      return Array.from(declaredToolNames)[0]
+    }
+    return callId || 'unknown'
+  }
+
+  for (let i = 0; i < messages.length; i++) {
+    const message = messages[i]
+
     if (message.role === 'system') {
       systemInstruction = typeof message.content === 'string'
         ? message.content
@@ -62,27 +112,54 @@ function toGeminiContents(messages: ChatMessage[]): { systemInstruction?: string
       continue
     }
 
-    const role = message.role === 'assistant' ? 'model' : 'user'
+    if (message.role === 'tool') {
+      const toolParts: GeminiPart[] = []
+      while (i < messages.length && messages[i].role === 'tool') {
+        const toolMsg = messages[i]
+        const responseContent = typeof toolMsg.content === 'string'
+          ? toolMsg.content
+          : toolMsg.content === null || toolMsg.content === undefined
+            ? ''
+            : JSON.stringify(toolMsg.content)
 
-    if (message.role === 'tool' && message.tool_call_id) {
-      const responseContent = typeof message.content === 'string' ? message.content : ''
-      let parsedResponse: Record<string, unknown>
-      try {
-        parsedResponse = JSON.parse(responseContent) as Record<string, unknown>
-      } catch {
-        parsedResponse = { result: responseContent }
-      }
-      contents.push({
-        role: 'function',
-        parts: [{
-          functionResponse: {
-            name: message.tool_call_id,
-            response: parsedResponse
+        let parsedResponse: Record<string, unknown>
+        try {
+          parsedResponse = JSON.parse(responseContent) as Record<string, unknown>
+          if (!isRecord(parsedResponse)) {
+            parsedResponse = { result: parsedResponse }
           }
-        }]
-      })
+        } catch {
+          parsedResponse = { result: responseContent }
+        }
+
+        const functionName = resolveFunctionName(
+          toolMsg.tool_call_id,
+          (toolMsg as { name?: string }).name
+        )
+
+        const functionResponse: { name: string; response: Record<string, unknown>; id?: string } = {
+          name: functionName,
+          response: parsedResponse
+        }
+        if (toolMsg.tool_call_id) {
+          functionResponse.id = toolMsg.tool_call_id
+        }
+
+        toolParts.push({ functionResponse })
+        i++
+      }
+      i-- // adjust because for-loop increments i
+
+      if (toolParts.length > 0) {
+        contents.push({
+          role: 'user',
+          parts: toolParts
+        })
+      }
       continue
     }
+
+    const role = message.role === 'assistant' ? 'model' : 'user'
 
     if (message.tool_calls && message.tool_calls.length > 0) {
       const parts: GeminiPart[] = []
@@ -94,11 +171,15 @@ function toGeminiContents(messages: ChatMessage[]): { systemInstruction?: string
         try {
           args = JSON.parse(tc.function.arguments) as Record<string, unknown>
         } catch { /* leave empty */ }
+        const functionCallPart: { name: string; args: Record<string, unknown>; id?: string } = {
+          name: tc.function.name,
+          args
+        }
+        if (tc.id) {
+          functionCallPart.id = tc.id
+        }
         parts.push({
-          functionCall: {
-            name: tc.function.name,
-            args
-          }
+          functionCall: functionCallPart
         })
       }
       contents.push({ role, parts })
@@ -124,7 +205,7 @@ function toGeminiContents(messages: ChatMessage[]): { systemInstruction?: string
 }
 
 /** Convert our FunctionDefinition[] to Gemini SDK Tool[]. */
-function toGeminiTools(tools: FunctionDefinition[]): Tool[] {
+export function toGeminiTools(tools: FunctionDefinition[]): Tool[] {
   const declarations: FunctionDeclaration[] = tools.map((t) => ({
     name: t.function.name,
     description: t.function.description,
@@ -134,7 +215,7 @@ function toGeminiTools(tools: FunctionDefinition[]): Tool[] {
 }
 
 /** Extract tool calls from a Gemini response. */
-function extractGeminiToolCalls(response: GenerateContentResponse): ToolCall[] | undefined {
+export function extractGeminiToolCalls(response: GenerateContentResponse): ToolCall[] | undefined {
   const candidates = response.candidates
   if (!candidates || candidates.length === 0) return undefined
 
@@ -146,7 +227,7 @@ function extractGeminiToolCalls(response: GenerateContentResponse): ToolCall[] |
     const fc = part.functionCall as FunctionCall | undefined
     if (fc && fc.name) {
       toolCalls.push({
-        id: fc.name,
+        id: fc.id || fc.name,
         type: 'function',
         function: {
           name: fc.name,
@@ -159,7 +240,7 @@ function extractGeminiToolCalls(response: GenerateContentResponse): ToolCall[] |
 }
 
 /** Extract text content from a Gemini response. */
-function extractGeminiText(response: GenerateContentResponse): string {
+export function extractGeminiText(response: GenerateContentResponse): string {
   const candidates = response.candidates
   if (!candidates || candidates.length === 0) return ''
 
@@ -173,7 +254,7 @@ function extractGeminiText(response: GenerateContentResponse): string {
 }
 
 /** Extract usage metrics from a Gemini response. */
-function extractGeminiUsage(response: GenerateContentResponse): { input: number; output: number; reasoning?: number } {
+export function extractGeminiUsage(response: GenerateContentResponse): { input: number; output: number; reasoning?: number } {
   const metadata = response.usageMetadata
   if (!metadata) return { input: 0, output: 0 }
   const input = metadata.promptTokenCount ?? 0
@@ -189,11 +270,11 @@ export class GeminiAdapter implements ProviderAdapter {
 
   private inflight = new Map<string, AbortController>()
 
-  async chat(request: ChatRequest): Promise<ChatResponse> {
+  async chat(request: ChatRequest, onDelta?: (delta: ChatDelta) => void): Promise<ChatResponse> {
     const key = getApiKey()
     const client = new GoogleGenAI({ apiKey: key })
 
-    const { systemInstruction, contents } = toGeminiContents(request.messages)
+    const { systemInstruction, contents } = toGeminiContents(request.messages, request.tools)
     const abort = new AbortController()
     if (request.signal) {
       if (request.signal.aborted) abort.abort()
@@ -216,7 +297,7 @@ export class GeminiAdapter implements ProviderAdapter {
         ? toGeminiTools(request.tools)
         : undefined
 
-      const response = await client.models.generateContent({
+      const responseStream = await client.models.generateContentStream({
         model: request.model,
         contents,
         config: {
@@ -227,19 +308,55 @@ export class GeminiAdapter implements ProviderAdapter {
         }
       })
 
-      const toolCalls = extractGeminiToolCalls(response)
-      const content = extractGeminiText(response)
-      const usage = extractGeminiUsage(response)
-      const finishReason: ChatResponse['finishReason'] = toolCalls
+      let fullText = ''
+      let fullThinking = ''
+      const toolCalls: ToolCall[] = []
+      let lastChunk: GenerateContentResponse | null = null
+
+      for await (const chunk of responseStream) {
+        lastChunk = chunk
+        const candidate = chunk.candidates?.[0]
+        const parts = candidate?.content?.parts
+        if (parts) {
+          for (const part of parts) {
+            const isThought = (part as Record<string, unknown>).thought === true
+            if (typeof part.text === 'string' && part.text.length > 0) {
+              if (isThought) {
+                fullThinking += part.text
+                onDelta?.({ thinkingContent: part.text })
+              } else {
+                fullText += part.text
+                onDelta?.({ content: part.text })
+              }
+            }
+            const fc = part.functionCall as FunctionCall | undefined
+            if (fc && fc.name) {
+              toolCalls.push({
+                id: fc.id || fc.name,
+                type: 'function',
+                function: {
+                  name: fc.name,
+                  arguments: JSON.stringify(fc.args ?? {})
+                }
+              })
+            }
+          }
+        }
+      }
+
+      const usage = lastChunk ? extractGeminiUsage(lastChunk) : { input: 0, output: 0 }
+      const lastFinishReason = lastChunk?.candidates?.[0]?.finishReason
+      const finishReason: ChatResponse['finishReason'] = toolCalls.length > 0
         ? 'tool_calls'
-        : (response.candidates?.[0]?.finishReason === 'MAX_TOKENS' ? 'length' : 'stop')
+        : (lastFinishReason === 'MAX_TOKENS' ? 'length' : 'stop')
 
       return {
         id: request.requestId,
-        content,
-        toolCalls,
+        content: fullText,
+        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
         finishReason,
-        usage
+        usage,
+        thinkingContent: fullThinking.length > 0 ? fullThinking : undefined
       }
     } catch (error) {
       if (abort.signal.aborted) throw new Error('Request aborted.')

@@ -1530,7 +1530,7 @@ export type AgentProfile = {
   description?: string
 
   // ── Model Selection ──
-  provider: string                 // must be a registry-supported id ('nanogpt' | 'google')
+  provider: string                 // must be a registry-supported id ('nanogpt', 'google', 'anthropic', 'openai', 'openrouter', 'groq', 'mistral', 'deepseek', 'moonshot', 'xai', 'cerebras', 'custom')
   model: string
   fallbackModels?: string[]
 
@@ -1555,10 +1555,11 @@ export type AgentProfile = {
   tokenBudget?: number             // input-token hard stop (enforced by AgentRunner)
   costBudget?: number              // accepted + reserved; NOT yet enforced (no pricing source)
 
-  // ── Routing (NanoGPT only) ──
+  // ── Routing & Endpoint ──
   routingSuffix?: string           // ':fast' | ':cheap' | ':speed' | ':price'
   billingRoute?: 'subscription' | 'standard'
   caching?: boolean
+  baseUrl?: string                 // base URL override for custom/local endpoints (e.g. http://localhost:11434/v1)
 
   // ── Metadata ──
   builtin?: boolean                // built-ins are read-only
