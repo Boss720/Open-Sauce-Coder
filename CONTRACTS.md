@@ -1750,8 +1750,11 @@ Limits enforced in code (`src/main/harness/dag/`):
 - Workflow files larger than 1 MiB are rejected by the loader.
 - `MAX_RETAINED_RUNS = 20` — the controller keeps at most 20 finished runs in memory
   (oldest evicted first, on run start and run finish); running runs are never evicted.
-- `getRunStatus`/`listRuns` truncate node output `content`, `error` and artifact `content`
-  strings to 64 KiB (`MAX_IPC_STRING_CHARS`) with a `[... truncated N characters]` marker.
+- `getRunStatus`/`listRuns` and every `oc:dag:event` broadcast truncate node output `content`,
+  `error` and artifact `content` strings to 64 KiB (`MAX_IPC_STRING_CHARS`) with a
+  `[... truncated N characters]` marker.
+- `policy.skipOnFail` is a deprecated no-op: a node whose dependency failed or was skipped is
+  always skipped. Only `policy.condition.upstreamNodeId` lets a node run after a failed upstream.
 
 ### Deferred follow-ups — do not code against these
 

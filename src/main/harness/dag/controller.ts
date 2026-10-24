@@ -10,6 +10,7 @@ import { isAbsolute } from 'node:path'
 import { DagRunner, type DagRunnerOptions } from './runner'
 import type {
   DagEvent,
+  DagNodeOutput,
   DagRunState,
   DagRunSummary,
   WorkflowDefinition
@@ -33,20 +34,37 @@ export function truncateForIpc(value: string, max = MAX_IPC_STRING_CHARS): strin
  * Returns a copy of a run state with every large string (node output content,
  * errors, artifact content) bounded, so getRunStatus cannot ship unbounded payloads.
  */
+function boundNodeOutput(out: DagNodeOutput, max: number): DagNodeOutput {
+  return {
+    ...out,
+    content: typeof out.content === 'string' ? truncateForIpc(out.content, max) : out.content,
+    error: typeof out.error === 'string' ? truncateForIpc(out.error, max) : out.error,
+    artifacts: out.artifacts?.map((a) => ({ ...a, content: truncateForIpc(a.content, max) }))
+  }
+}
+
 export function boundRunState(state: DagRunState, max = MAX_IPC_STRING_CHARS): DagRunState {
   const nodeOutputs: DagRunState['nodeOutputs'] = {}
   for (const [id, out] of Object.entries(state.nodeOutputs ?? {})) {
-    nodeOutputs[id] = {
-      ...out,
-      content: typeof out.content === 'string' ? truncateForIpc(out.content, max) : out.content,
-      error: typeof out.error === 'string' ? truncateForIpc(out.error, max) : out.error,
-      artifacts: out.artifacts?.map((a) => ({ ...a, content: truncateForIpc(a.content, max) }))
-    }
+    nodeOutputs[id] = boundNodeOutput(out, max)
   }
   return {
     ...state,
     nodeOutputs,
     error: typeof state.error === 'string' ? truncateForIpc(state.error, max) : state.error
+  }
+}
+
+/**
+ * Returns a copy of a DAG event with its node output and error bounded, so the
+ * oc:dag:event broadcast obeys the same per-string cap as getRunStatus.
+ */
+export function boundDagEvent(event: DagEvent, max = MAX_IPC_STRING_CHARS): DagEvent {
+  if (!event.output && typeof event.error !== 'string') return event
+  return {
+    ...event,
+    output: event.output ? boundNodeOutput(event.output, max) : event.output,
+    error: typeof event.error === 'string' ? truncateForIpc(event.error, max) : event.error
   }
 }
 
@@ -134,7 +152,7 @@ export class DagController {
     void runner
       .run((event) => {
         entry.state = runner.getState()
-        this.onEvent?.(dagRunId, event)
+        this.onEvent?.(dagRunId, boundDagEvent(event))
       })
       .catch((err: unknown) => {
         // run() rejected, so nothing else will stop its in-flight nodes.
@@ -149,7 +167,7 @@ export class DagController {
           type: 'dag_error',
           dagRunId,
           timestamp: Date.now(),
-          error: errMsg
+          error: truncateForIpc(errMsg)
         })
       })
       .finally(() => {

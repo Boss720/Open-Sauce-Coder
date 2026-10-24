@@ -3,6 +3,7 @@ import {
   DagController,
   MAX_IPC_STRING_CHARS,
   MAX_RETAINED_RUNS,
+  boundDagEvent,
   boundRunState,
   getDagController,
   truncateForIpc
@@ -344,5 +345,48 @@ describe('DagController retention and bounds', () => {
     expect(out.nodeOutputs.a.error).toMatch(/truncated/)
     expect(state.nodeOutputs.a.content).toBe(big)
     expect(truncateForIpc('short')).toBe('short')
+  })
+
+  it('boundDagEvent caps node output and error on oc:dag:event payloads', () => {
+    const big = 'x'.repeat(100)
+    const event = {
+      type: 'dag_node_complete',
+      dagRunId: 'r',
+      timestamp: 1,
+      nodeId: 'n',
+      output: {
+        nodeId: 'n',
+        status: 'succeeded',
+        finishReason: 'complete',
+        content: big,
+        artifacts: [],
+        turns: 1,
+        usage: { input: 1, output: 1 }
+      },
+      error: big
+    } as DagEvent
+    const bounded = boundDagEvent(event, 10)
+    expect(bounded.output?.content).toBe(truncateForIpc(big, 10))
+    expect(bounded.output?.content?.length).toBeLessThan(big.length)
+    expect(bounded.error).toBe(truncateForIpc(big, 10))
+    // input is not mutated
+    expect(event.output?.content).toBe(big)
+    const small = { type: 'dag_start', dagRunId: 'r', timestamp: 1 } as DagEvent
+    expect(boundDagEvent(small, 10)).toBe(small)
+  })
+
+  it('forwards node outputs through the event callback', async () => {
+    const testDir = mkdtempSync(join(tmpdir(), 'dag-test-'))
+    try {
+      const events: DagEvent[] = []
+      const controller = new DagController({ runnerFactory: mockRunnerFactory(0) })
+      controller.setEventCallback((_id: string, e: DagEvent) => events.push(e))
+      await controller.startDagRun({ workflow: makeValidWorkflow(), directory: testDir })
+      await new Promise((r) => setTimeout(r, 40))
+      const complete = events.find((e) => e.type === 'dag_node_complete' && e.output)
+      expect(complete?.output?.content).toMatch(/^Completed step-/)
+    } finally {
+      rmSync(testDir, { recursive: true, force: true })
+    }
   })
 })

@@ -3,7 +3,7 @@
  *
  * Manages topological wave execution, concurrency throttling via Promise.allSettled,
  * safe template interpolation, condition and failure policy evaluations (abortOnFail,
- * skipOnFail), hierarchical cancellation propagation, and aggregated metrics tracking.
+ * condition), hierarchical cancellation propagation, and aggregated metrics tracking.
  */
 
 import { randomUUID } from 'node:crypto'

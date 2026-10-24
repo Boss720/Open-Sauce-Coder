@@ -9,6 +9,11 @@ export type DagNodeState = 'pending' | 'running' | 'succeeded' | 'failed' | 'ski
 export type DagRunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
 
 export interface DagNodePolicy {
+  /**
+   * @deprecated No-op, kept so existing workflow files still type-check and load.
+   * A node whose dependency failed or was skipped is always skipped, with or
+   * without this flag. Use `condition` to run a node after an upstream failure.
+   */
   skipOnFail?: boolean
   abortOnFail?: boolean
   condition?: {
