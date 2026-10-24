@@ -55,6 +55,7 @@ export type ChatRequest = {
   caching?: boolean
   billingRoute?: 'subscription' | 'standard'
   baseUrl?: string
+  directory?: string
 }
 
 export type ChatResponse = {

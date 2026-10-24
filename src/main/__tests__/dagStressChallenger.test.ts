@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { DagRunner } from '../harness/dag/runner'
+import { DagRunner, MAX_NODE_CONCURRENCY } from '../harness/dag/runner'
 import { DagController } from '../harness/dag/controller'
 import type {
   DagEvent,
@@ -210,7 +210,7 @@ describe('M2 Stress-Test Suite — Empirical Concurrency & Edge Cases', () => {
       expect(maxObservedNeg()).toBe(1)
     })
 
-    it('handles high concurrency scale (30 nodes, maxConcurrency=30) without stalling or stack overflow', async () => {
+    it('clamps a requested maxConcurrency of 30 to MAX_NODE_CONCURRENCY without stalling', async () => {
       const nodeCount = 30
       const nodes = Array.from({ length: nodeCount }, (_, i) => makeNode({ id: `scale-${i}` }))
       const plan: DagExecutionPlan = {
@@ -224,9 +224,13 @@ describe('M2 Stress-Test Suite — Empirical Concurrency & Edge Cases', () => {
         runnerFactory: factory
       })
 
+      // Asking for 30 must not allow 30 parallel paid runs: the runner holds
+      // the ceiling and still drains all 30 nodes.
+      expect(runner.maxConcurrency).toBe(MAX_NODE_CONCURRENCY)
       const state = await runner.run()
       expect(state.status).toBe('completed')
-      expect(getMaxActiveObserved()).toBeGreaterThanOrEqual(15)
+      expect(getMaxActiveObserved()).toBeLessThanOrEqual(MAX_NODE_CONCURRENCY)
+      expect(getMaxActiveObserved()).toBeGreaterThan(1)
       expect(runner.turns).toBe(30)
     })
   })
@@ -242,7 +246,7 @@ describe('M2 Stress-Test Suite — Empirical Concurrency & Edge Cases', () => {
         waves: [{ waveIndex: 0, nodeIds: ['imm-1', 'imm-2'] }]
       }
 
-      const { factory, runnerInstances } = createStressRunnerFactory({}, 100)
+      const { factory } = createStressRunnerFactory({}, 100)
       const runner = new DagRunner(plan, '/test-dir', { runnerFactory: factory })
 
       const runPromise = runner.run()
@@ -282,7 +286,7 @@ describe('M2 Stress-Test Suite — Empirical Concurrency & Edge Cases', () => {
       expect(state.status).toBe('cancelled')
 
       // All 4 active runners should have received abort()
-      for (const [nodeId, inst] of runnerInstances.entries()) {
+      for (const inst of runnerInstances.values()) {
         expect(inst.abort).toHaveBeenCalled()
       }
 
@@ -644,7 +648,7 @@ describe('M2 Stress-Test Suite — Empirical Concurrency & Edge Cases', () => {
       expect(runner.nodeOutputs.get('crash-node')?.error).toContain('Simulated internal runner segmentation fault')
     })
 
-    it('empirically examines behavior when runnerFactory throws synchronously during instantiation', async () => {
+    it('fails the node and the run when runnerFactory throws synchronously during instantiation', async () => {
       const crashingNode = makeNode({ id: 'inst-fail-node' })
       const plan: DagExecutionPlan = {
         workflow: { id: 'inst-throw-wf', name: 'Inst Throw WF', nodes: [crashingNode] },
@@ -659,14 +663,15 @@ describe('M2 Stress-Test Suite — Empirical Concurrency & Edge Cases', () => {
 
       const state = await runner.run()
 
-      // EMPIRICAL BUG REPRODUCTION:
-      // Due to missing try/catch around lines 331-420 in runner.ts:
-      // 1. The node is stuck in 'running' state instead of 'failed'
-      expect(state.nodeStates['inst-fail-node']).toBe('running')
-      // 2. The node never recorded output or completion
-      expect(state.nodeOutputs['inst-fail-node']).toBeUndefined()
-      // 3. Line 595 only checks `st === 'failed'`, so the entire DAG falsely reports 'completed'!
-      expect(state.status).toBe('completed')
+      // A rejection thrown before executeNode's own try/catch is reached is
+      // recorded from the settled results of runWithConcurrency, so:
+      // 1. The node reaches a terminal 'failed' state rather than staying 'running'
+      expect(state.nodeStates['inst-fail-node']).toBe('failed')
+      // 2. The failure is recorded as node output, carrying the reason
+      expect(state.nodeOutputs['inst-fail-node']?.status).toBe('failed')
+      expect(state.nodeOutputs['inst-fail-node']?.error).toMatch(/Factory instantiation failed/)
+      // 3. The run as a whole reports failure instead of a false 'completed'
+      expect(state.status).toBe('failed')
     })
 
     it('observes skipOnFail field behavior across node definitions', async () => {

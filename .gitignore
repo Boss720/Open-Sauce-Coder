@@ -10,6 +10,9 @@ release/
 coverage/
 
 # agent scratch
+# .opencode/ holds OpenCode's auto-installed plugin deps; only workflows/ is source.
+.opencode/package.json
+.opencode/package-lock.json
 .claude/
 .claude-octopus/
 .agents/

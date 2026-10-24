@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { validateWorkflow } from '../harness/dag/validator'
+import { MAX_WORKFLOW_NODES, validateWorkflow } from '../harness/dag/validator'
 import { interpolatePrompt } from '../harness/dag/interpolator'
 import type { DagNodeDefinition, DagNodeOutput, WorkflowDefinition } from '../harness/dag/types'
 
@@ -425,15 +425,26 @@ describe('M1 Empirical Stress Test Suite: DAG Invariants', () => {
       ])
     })
 
-    it('correctly handles stress graph with 500 nodes', () => {
+    it('correctly handles a stress graph at the MAX_WORKFLOW_NODES limit', () => {
       const start = Date.now()
-      const largeWf = generateRandomDag(500, 0.02, 12345)
+      const largeWf = generateRandomDag(MAX_WORKFLOW_NODES, 0.05, 12345)
       const res = validateWorkflow(largeWf)
       const duration = Date.now() - start
 
       expect(res.valid).toBe(true)
       expect(res.plan).toBeDefined()
       expect(duration).toBeLessThan(1500) // Must execute well under 1.5 seconds
+    })
+
+    it('rejects a workflow over MAX_WORKFLOW_NODES before any graph analysis', () => {
+      const start = Date.now()
+      const res = validateWorkflow(generateRandomDag(500, 0.02, 12345))
+      const duration = Date.now() - start
+
+      expect(res.valid).toBe(false)
+      expect(res.plan).toBeUndefined()
+      expect(res.errors.join(' ')).toMatch(/maximum is 128/)
+      expect(duration).toBeLessThan(200)
     })
   })
 })

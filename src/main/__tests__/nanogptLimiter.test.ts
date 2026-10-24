@@ -246,7 +246,7 @@ describe('NanogptLimiter', () => {
 
     // 11th should queue and wait
     let acquired11th = false
-    const p11 = limiter.acquireSlot().then(() => {
+    const queuedAcquisition = limiter.acquireSlot().then(() => {
       acquired11th = true
     })
 
@@ -256,6 +256,7 @@ describe('NanogptLimiter', () => {
     // Release one and the 11th should acquire
     r1()
     await vi.runAllTimersAsync()
+    await queuedAcquisition
     expect(acquired11th).toBe(true)
 
     // Clean up

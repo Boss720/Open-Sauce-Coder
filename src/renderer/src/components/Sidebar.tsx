@@ -24,12 +24,13 @@ const CLOSE_PROVIDERS_EVENT = 'opencode-desktop:close-providers'
 /** Dispatched to ask Chat.tsx to open the global chat-search modal. */
 const OPEN_SEARCH_EVENT = 'chat:open-search'
 
-type SidebarIconName = 'tasks' | 'agents' | 'providers' | 'images' | 'screen'
+type SidebarIconName = 'tasks' | 'agents' | 'dag' | 'providers' | 'images' | 'screen'
 
 function SidebarIcon({ name }: { name: SidebarIconName }): JSX.Element {
   const paths: Record<SidebarIconName, JSX.Element> = {
     tasks: <><rect x="3" y="4" width="18" height="15" rx="3" /><path d="M8 9h8M8 13h5" /></>,
     agents: <><circle cx="9" cy="8" r="3" /><path d="M3.5 20a5.5 5.5 0 0 1 11 0M16 5.5a3 3 0 0 1 0 5.8M17 15a5 5 0 0 1 3.5 4.8" /></>,
+    dag: <><circle cx="5" cy="6" r="2.5" /><circle cx="19" cy="6" r="2.5" /><circle cx="12" cy="18" r="2.5" /><path d="m7 7.5 3.5 8M17 7.5l-3.5 8" /></>,
     providers: <><rect x="9" y="2.5" width="6" height="5" rx="1.5" /><rect x="2.5" y="16.5" width="6" height="5" rx="1.5" /><rect x="15.5" y="16.5" width="6" height="5" rx="1.5" /><path d="M12 7.5v5M5.5 16.5v-4h13v4" /></>,
     images: <><rect x="3" y="3" width="18" height="18" rx="3" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="m21 15-5-5L5 21" /></>,
     screen: <><rect x="3" y="4" width="18" height="14" rx="2" /><path d="M8 22h8m-4-4v4" /></>
@@ -255,6 +256,7 @@ export function Sidebar({ onOpenLiveScreen }: { onOpenLiveScreen?: () => void })
             <div className="sidebar__group-label">Workspace</div>
             <SidebarNavItem icon="tasks" label="Tasks" active={activeView === 'chats'} onClick={() => setActiveView('chats')} />
             <SidebarNavItem icon="agents" label="Agents" active={activeView === 'harness'} onClick={() => setActiveView('harness')} />
+            <SidebarNavItem icon="dag" label="Workflows" active={activeView === 'dag'} onClick={() => setActiveView('dag')} />
             <SidebarNavItem icon="providers" label="Providers" onClick={() => setProvidersOpen(true)} />
           </div>
           <div className="sidebar__nav-secondary">
@@ -301,6 +303,7 @@ export function Sidebar({ onOpenLiveScreen }: { onOpenLiveScreen?: () => void })
             <div className="sidebar__group-label">Workspace</div>
             <SidebarNavItem icon="tasks" label="Tasks" active={activeView === 'chats'} onClick={() => setActiveView('chats')} />
             <SidebarNavItem icon="agents" label="Agents" active={activeView === 'harness'} onClick={() => setActiveView('harness')} />
+            <SidebarNavItem icon="dag" label="Workflows" active={activeView === 'dag'} onClick={() => setActiveView('dag')} />
             <SidebarNavItem icon="providers" label="Providers" onClick={() => setProvidersOpen(true)} />
           </div>
           <div className="sidebar__nav-secondary">

@@ -39,7 +39,12 @@ import type {
   RunStatus,
   HarnessToolDefinition,
   HarnessEventPayload,
-  KeyRow
+  KeyRow,
+  WorkflowSummary,
+  WorkflowDefinition,
+  DagRunState,
+  DagRunSummary,
+  DagEvent
 } from '../types'
 
 export interface OpencodeApi {
@@ -165,6 +170,15 @@ export interface OpencodeApi {
     }
     tools: { list(): Promise<HarnessToolDefinition[]> }
     onEvent(cb: (payload: HarnessEventPayload) => void): () => void
+  }
+  dag?: {
+    listWorkflows(directory: string): Promise<WorkflowSummary[]>
+    loadWorkflow(directory: string, workflowId: string): Promise<WorkflowDefinition>
+    startRun(request: { workflow: WorkflowDefinition; directory: string; maxWorkerConcurrency?: number }): Promise<{ runId: string }>
+    stopRun(runId: string): Promise<{ success: boolean }>
+    getRunStatus(runId: string): Promise<DagRunState | null>
+    listRuns(): Promise<DagRunSummary[]>
+    onEvent(cb: (event: DagEvent) => void): () => void
   }
   onEvent(cb: (e: OcEvent) => void): () => void
   onServer(cb: (s: ServerStatus) => void): () => void

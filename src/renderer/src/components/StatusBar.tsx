@@ -19,7 +19,8 @@ const PANEL_BUTTONS: ReadonlyArray<{
   { tab: 'editor', label: 'Editor', hint: 'Review and edit files' },
   { tab: 'changes', label: 'Changes', hint: 'Every changed file as one diff' },
   { tab: 'git', label: 'Git', hint: 'Stage and commit changes' },
-  { tab: 'terminal', label: 'Terminal', hint: 'Integrated terminal (Ctrl+`)' }
+  { tab: 'terminal', label: 'Terminal', hint: 'Integrated terminal (Ctrl+`)' },
+  { tab: 'dag', label: 'DAG', hint: 'Workflow DAG Canvas' }
 ]
 
 function hostLabel(url: string | null): string {

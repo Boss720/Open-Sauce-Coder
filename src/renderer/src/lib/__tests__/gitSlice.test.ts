@@ -40,7 +40,7 @@ function status(overrides: Partial<GitStatus> = {}): GitStatus {
   return { branch: 'main', upstream: null, ahead: 0, behind: 0, entries: [], clean: true, ...overrides }
 }
 
-function fakeApi(overrides: Partial<OpencodeApi['git']>): OpencodeApi {
+function fakeApi(overrides: Partial<OpencodeApi['git']> = {}): OpencodeApi {
   return { git: { status: vi.fn(), branches: vi.fn(async () => []), ...overrides } } as unknown as OpencodeApi
 }
 
@@ -137,7 +137,7 @@ describe('gitSlice', () => {
   describe('stagePaths / unstagePaths', () => {
     it('stagePaths updates gitStatus from the response', async () => {
       const staged = status({ clean: false })
-      mockApi.mockReturnValue(fakeApi({ stage: vi.fn(async () => staged) } as any))
+      mockApi.mockReturnValue(fakeApi({ stage: vi.fn(async () => staged) } as unknown as Partial<OpencodeApi['git']>))
 
       const { get, slice } = setup({ directory: '/proj' })
 
@@ -147,7 +147,7 @@ describe('gitSlice', () => {
 
     it('is a no-op for an empty path list', async () => {
       const stageFn = vi.fn(async () => status())
-      mockApi.mockReturnValue(fakeApi({ stage: stageFn } as any))
+      mockApi.mockReturnValue(fakeApi({ stage: stageFn } as unknown as Partial<OpencodeApi['git']>))
 
       const { get, slice } = setup({ directory: '/proj' })
 
@@ -160,7 +160,7 @@ describe('gitSlice', () => {
   describe('checkoutBranch', () => {
     it('switches branch then closes the open file and reloads the tree, since both go stale', async () => {
       const newStatus = status({ branch: 'develop' })
-      mockApi.mockReturnValue(fakeApi({ checkout: vi.fn(async () => newStatus) } as any))
+      mockApi.mockReturnValue(fakeApi({ checkout: vi.fn(async () => newStatus) } as unknown as Partial<OpencodeApi['git']>))
 
       const closeFile = vi.fn()
       const loadTree = vi.fn(async () => {})
@@ -178,7 +178,7 @@ describe('gitSlice', () => {
           checkout: vi.fn(async () => {
             throw new Error('local changes would be overwritten')
           })
-        } as any)
+        } as unknown as Partial<OpencodeApi['git']>)
       )
 
       const closeFile = vi.fn()
@@ -216,7 +216,7 @@ describe('gitSlice', () => {
     it('reuses the already-open diff for the same path instead of re-fetching', async () => {
       const diffFn = vi.fn()
       const stageHunksFn = vi.fn(async () => status({ clean: false }))
-      mockApi.mockReturnValue(fakeApi({ diff: diffFn, stageHunks: stageHunksFn } as any))
+      mockApi.mockReturnValue(fakeApi({ diff: diffFn, stageHunks: stageHunksFn } as unknown as Partial<OpencodeApi['git']>))
 
       const { get, slice } = setup({ directory: '/proj', openFileDiff: diff })
 
@@ -228,7 +228,7 @@ describe('gitSlice', () => {
 
     it('fetches a fresh diff when none is open for that path', async () => {
       const diffFn = vi.fn(async () => diff)
-      mockApi.mockReturnValue(fakeApi({ diff: diffFn, stageHunks: vi.fn(async () => status()) } as any))
+      mockApi.mockReturnValue(fakeApi({ diff: diffFn, stageHunks: vi.fn(async () => status()) } as unknown as Partial<OpencodeApi['git']>))
 
       const { get, slice } = setup({ directory: '/proj', openFileDiff: null })
 
@@ -239,7 +239,7 @@ describe('gitSlice', () => {
 
     it('refuses to stage hunks of a truncated diff', async () => {
       const truncated: FileDiff = { ...diff, truncated: true }
-      mockApi.mockReturnValue(fakeApi({} as any))
+      mockApi.mockReturnValue(fakeApi({} as unknown as Partial<OpencodeApi['git']>))
 
       const { get, slice } = setup({ directory: '/proj', openFileDiff: truncated })
 
@@ -253,7 +253,7 @@ describe('gitSlice', () => {
           stageHunks: vi.fn(async () => {
             throw new Error('unexpected file in patch: a.ts')
           })
-        } as any)
+        } as unknown as Partial<OpencodeApi['git']>)
       )
 
       const { get, slice } = setup({ directory: '/proj', openFileDiff: diff })
@@ -268,7 +268,7 @@ describe('gitSlice', () => {
           stageHunks: vi.fn(async () => {
             throw new Error('disk full')
           })
-        } as any)
+        } as unknown as Partial<OpencodeApi['git']>)
       )
 
       const { get, slice } = setup({ directory: '/proj', openFileDiff: diff })
@@ -281,7 +281,7 @@ describe('gitSlice', () => {
   describe('commit', () => {
     it('rejects an empty/whitespace message without calling the backend', async () => {
       const commitFn = vi.fn()
-      mockApi.mockReturnValue(fakeApi({ commit: commitFn } as any))
+      mockApi.mockReturnValue(fakeApi({ commit: commitFn } as unknown as Partial<OpencodeApi['git']>))
 
       const { get, slice } = setup({ directory: '/proj' })
 
@@ -293,7 +293,7 @@ describe('gitSlice', () => {
     it('commits then immediately refreshes status — not through the debounce', async () => {
       const commitFn = vi.fn(async () => ({ sha: 'abc123' }))
       const statusFn = vi.fn(async () => status({ clean: true }))
-      mockApi.mockReturnValue(fakeApi({ commit: commitFn, status: statusFn, branches: vi.fn(async () => []) } as any))
+      mockApi.mockReturnValue(fakeApi({ commit: commitFn, status: statusFn, branches: vi.fn(async () => []) } as unknown as Partial<OpencodeApi['git']>))
 
       const { get, slice } = setup({ directory: '/proj' })
 

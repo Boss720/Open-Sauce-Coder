@@ -62,6 +62,8 @@ import {
 } from './nanogptImages'
 import { classifyBilling, type ImageBilling } from './nanogptBilling'
 import { getHarnessController } from './harness/controller'
+import { getDagController, listWorkflows, loadWorkflow } from './harness/dag'
+import type { DagRunState, DagRunSummary, WorkflowDefinition, WorkflowSummary } from './harness/dag'
 
 export type MessageWithParts = { info: Message; parts: Part[] }
 export type ProvidersResult = { providers: Provider[]; default: Record<string, string>; linkedProviderIDs: string[] }
@@ -199,7 +201,13 @@ const CHANNELS = [
   'oc:harness:run:stop',
   'oc:harness:run:status',
   'oc:harness:run:list',
-  'oc:harness:tools:list'
+  'oc:harness:tools:list',
+  'oc:dag:listWorkflows',
+  'oc:dag:loadWorkflow',
+  'oc:dag:startRun',
+  'oc:dag:stopRun',
+  'oc:dag:getRunStatus',
+  'oc:dag:listRuns'
 ] as const
 
 /** Sizes the image endpoint is asked for. An allowlist — `size` is forwarded to a paid API. */
@@ -1382,6 +1390,96 @@ export function registerIpc(options: RegisterIpcOptions = {}): void {
   ipcMain.handle('oc:harness:run:list', () => getHarnessController().listRuns())
 
   ipcMain.handle('oc:harness:tools:list', () => getHarnessController().listTools())
+
+  /* ---------------------------------------------------------------- */
+  /* Multi-Agent Directed Acyclic Graph (DAG) orchestration engine     */
+  /* Workflow discovery/loading and run lifecycle via DagController.   */
+  /* ---------------------------------------------------------------- */
+
+  ipcMain.handle(
+    'oc:dag:listWorkflows',
+    async (_event, directoryArg: unknown): Promise<WorkflowSummary[]> => {
+      // The project directory is required and validated; never derived from
+      // renderer-supplied text and never defaulted to process.cwd().
+      const dir = requireDirectory(directoryArg, 'directory')
+      // Disk-only pass first so builtin templates are not given a filePath
+      // for a file that does not exist.
+      const diskIds = new Set((await listWorkflows(dir)).map((wf) => wf.id))
+      const workflows = await listWorkflows(dir, { includeBuiltin: true })
+      return workflows.map((wf) => ({
+        id: wf.id,
+        name: wf.name,
+        description: wf.description,
+        nodeCount: wf.nodes ? wf.nodes.length : 0,
+        filePath: diskIds.has(wf.id)
+          ? join(dir, '.opencode', 'workflows', `${wf.id}.json`)
+          : undefined
+      }))
+    }
+  )
+
+  ipcMain.handle(
+    'oc:dag:loadWorkflow',
+    async (_event, directoryArg: unknown, workflowIdArg: unknown): Promise<WorkflowDefinition> => {
+      // Containment base is the validated project directory, never a value
+      // derived from the renderer-supplied workflow reference. The loader
+      // resolves `<dir>/.opencode/workflows/<id>.json` through assertSubpath
+      // and falls back to a builtin template when no such file exists.
+      const dir = requireDirectory(directoryArg, 'directory')
+      const workflowId = requireString(workflowIdArg, 'workflowId').trim()
+      if (!workflowId) {
+        throw new Error('Invalid IPC argument: workflowId must be a non-empty string.')
+      }
+      return loadWorkflow(dir, workflowId)
+    }
+  )
+
+  ipcMain.handle(
+    'oc:dag:startRun',
+    async (_event, reqArg: unknown): Promise<{ runId: string }> => {
+      const req = requireObject(reqArg, 'startRun request')
+      const workflow = req.workflow as WorkflowDefinition
+      if (!workflow || typeof workflow !== 'object') {
+        throw new Error('Invalid IPC argument: workflow must be a WorkflowDefinition object.')
+      }
+      const directory = requireDirectory(req.directory, 'directory')
+      // Only a finite positive number is forwarded (NaN and Infinity are
+      // dropped); DagRunner clamps it to its hard concurrency ceiling.
+      const maxWorkerConcurrency =
+        typeof req.maxWorkerConcurrency === 'number' &&
+        Number.isFinite(req.maxWorkerConcurrency) &&
+        req.maxWorkerConcurrency >= 1
+          ? Math.floor(req.maxWorkerConcurrency)
+          : undefined
+      const result = await getDagController().startDagRun({
+        workflow,
+        directory,
+        options: maxWorkerConcurrency ? { maxConcurrency: maxWorkerConcurrency } : undefined
+      })
+      return { runId: result.dagRunId }
+    }
+  )
+
+  ipcMain.handle(
+    'oc:dag:stopRun',
+    async (_event, runIdArg: unknown): Promise<{ success: boolean }> => {
+      const runId = requireString(runIdArg, 'runId')
+      const success = await getDagController().stopDagRun(runId)
+      return { success }
+    }
+  )
+
+  ipcMain.handle(
+    'oc:dag:getRunStatus',
+    (_event, runIdArg: unknown): DagRunState | null => {
+      const runId = requireString(runIdArg, 'runId')
+      return getDagController().getDagRunStatus(runId)
+    }
+  )
+
+  ipcMain.handle('oc:dag:listRuns', (): DagRunSummary[] => {
+    return getDagController().listDagRuns()
+  })
 
   /* ---------------------------------------------------------------- */
   /* Phase 1 — fs / git / terminal / editor deep-link (code surface)   */

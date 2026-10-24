@@ -90,8 +90,8 @@ export function createRoutingSlice(set: SetState, get: GetState): RoutingSlice {
       const available = new Set<string>()
       for (const p of providers) {
         if (!linkedProviderIDs.includes(p.id)) continue
-        for (const m of Object.values(p.models ?? {}) as Array<{ id: string }>) {
-          if (isAgentModel(m as any) && isFreeModel(p.id, m.id)) available.add(`${p.id}/${m.id}`)
+        for (const m of Object.values(p.models ?? {})) {
+          if (isAgentModel(m) && isFreeModel(p.id, m.id)) available.add(`${p.id}/${m.id}`)
         }
       }
       // A failed model must never be immediately selected again.  Transient

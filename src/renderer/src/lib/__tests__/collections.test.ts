@@ -18,19 +18,19 @@ describe('collections helpers', () => {
 
   it('sortMessages orders messages by created timestamp', () => {
     const m1: MessageWithParts = {
-      info: { id: 'm1', sessionID: 's1', role: 'user', time: { created: 100 } } as any,
+      info: { id: 'm1', sessionID: 's1', role: 'user', time: { created: 100 } } as unknown as MessageWithParts['info'],
       parts: []
     }
     const m2: MessageWithParts = {
-      info: { id: 'm2', sessionID: 's1', role: 'assistant', time: { created: 200 } } as any,
+      info: { id: 'm2', sessionID: 's1', role: 'assistant', time: { created: 200 } } as unknown as MessageWithParts['info'],
       parts: []
     }
     expect(sortMessages([m2, m1])).toEqual([m1, m2])
   })
 
   it('upserts and removes messages immutably', () => {
-    const info1 = { id: 'm1', sessionID: 's1', role: 'user', time: { created: 100 } } as any
-    const updatedInfo = { id: 'm1', sessionID: 's1', role: 'user', time: { created: 100, completed: 150 } } as any
+    const info1 = { id: 'm1', sessionID: 's1', role: 'user', time: { created: 100 } } as unknown as MessageWithParts['info']
+    const updatedInfo = { id: 'm1', sessionID: 's1', role: 'user', time: { created: 100, completed: 150 } } as unknown as MessageWithParts['info']
 
     const list1 = upsertMessage([], info1)
     expect(list1).toHaveLength(1)
@@ -38,7 +38,7 @@ describe('collections helpers', () => {
 
     const list2 = upsertMessage(list1, updatedInfo)
     expect(list2).toHaveLength(1)
-    expect((list2[0].info.time as any).completed).toBe(150)
+    expect((list2[0].info.time as unknown as { completed?: number }).completed).toBe(150)
 
     const list3 = removeMessage(list2, 'm1')
     expect(list3).toHaveLength(0)

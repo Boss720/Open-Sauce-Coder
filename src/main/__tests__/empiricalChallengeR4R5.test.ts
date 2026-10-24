@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { validateProfile, BUILTIN_PROFILES, type AgentProfile } from '../harness/profiles'
+import { validateProfile, type AgentProfile } from '../harness/profiles'
 import { ToolRegistry, type ToolContext } from '../harness/tools/registry'
 import { AgentRunner, type RunnerEvent } from '../harness/runner'
 import type { ProviderAdapter, ChatRequest, ChatResponse } from '../harness/providers/adapter'
@@ -220,9 +220,9 @@ describe('R4 Adversarial Challenge: Lossless Profile Persistence & Safety Semant
       expect(validated.caching).toBe(true)
       expect(validated.tools).toEqual(['fs_read', 'grep'])
       // Arbitrary fields survived validation
-      expect((validated as any).customDomain).toBe('cybersecurity')
-      expect((validated as any).extraParams).toEqual({ top_k: 40, penalty: 1.1 })
-      expect((validated as any).tags).toEqual(['audit', 'm0'])
+      expect((validated as Record<string, unknown>).customDomain).toBe('cybersecurity')
+      expect((validated as Record<string, unknown>).extraParams).toEqual({ top_k: 40, penalty: 1.1 })
+      expect((validated as Record<string, unknown>).tags).toEqual(['audit', 'm0'])
     })
 
     it('ProfileStore saves to disk and reads back arbitrary fields and tools: [] losslessly', async () => {
@@ -243,10 +243,11 @@ describe('R4 Adversarial Challenge: Lossless Profile Persistence & Safety Semant
 
       // Inspect persisted file on disk
       const filePath = join(userDataPath, 'harness-profiles.json')
-      const rawOnDisk = JSON.parse(readFileSync(filePath, 'utf8')) as { profiles: any[] }
+      const rawOnDisk = JSON.parse(readFileSync(filePath, 'utf8')) as { profiles: Array<Record<string, unknown>> }
       const persisted = rawOnDisk.profiles.find((p) => p.id === 'round-trip-agent')
 
       expect(persisted).toBeDefined()
+      if (!persisted) throw new Error('Persisted profile was not written')
       expect(persisted.tools).toEqual([])
       expect(persisted.thinking).toEqual({ enabled: true, budget: 8192 })
       expect(persisted.customField).toBe('preserved-value')
@@ -259,8 +260,8 @@ describe('R4 Adversarial Challenge: Lossless Profile Persistence & Safety Semant
       expect(retrieved).toBeDefined()
       expect(retrieved?.tools).toEqual([])
       expect(retrieved?.thinking).toEqual({ enabled: true, budget: 8192 })
-      expect((retrieved as any)?.customField).toBe('preserved-value')
-      expect((retrieved as any)?.numericCode).toBe(42)
+      expect((retrieved as Record<string, unknown>)?.customField).toBe('preserved-value')
+      expect((retrieved as Record<string, unknown>)?.numericCode).toBe(42)
     })
 
     it('strictly validates profile ID format preventing path traversal and unsafe identifiers', () => {

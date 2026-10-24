@@ -28,6 +28,10 @@ import type {
 } from './types'
 
 export interface DagRunnerOptions {
+  /** Aggregate input+output+reasoning token ceiling for the whole run. */
+  maxRunTokens?: number
+  /** Wall-clock ceiling for the whole run, in milliseconds. */
+  maxRunDurationMs?: number
   dagRunId?: string
   maxConcurrency?: number
   signal?: AbortSignal
@@ -77,6 +81,25 @@ async function runWithConcurrency<T>(
   return results
 }
 
+/** Hard ceiling on parallel node runs, whatever the caller asks for. */
+export const MAX_NODE_CONCURRENCY = 8
+/** Per-run defaults; budgets are otherwise only enforced per node. */
+export const DEFAULT_MAX_RUN_TOKENS = 5_000_000
+export const DEFAULT_MAX_RUN_DURATION_MS = 30 * 60 * 1000
+/** Same 1..500 hard cap AgentProfile.maxTurns is held to. */
+const MAX_PROFILE_TURNS = 500
+
+/**
+ * Applies a node's maxTurns override to its profile without ever exceeding the
+ * profile's own cap, so a workflow cannot raise a limit the profile sets.
+ */
+function withNodeTurns(base: AgentProfile, nodeMaxTurns: number | undefined): AgentProfile {
+  if (nodeMaxTurns === undefined) return base
+  const ceiling = base.maxTurns ?? MAX_PROFILE_TURNS
+  const requested = Number.isFinite(nodeMaxTurns) ? Math.floor(nodeMaxTurns) : ceiling
+  return { ...base, maxTurns: Math.max(1, Math.min(requested, ceiling, MAX_PROFILE_TURNS)) }
+}
+
 export class DagRunner {
   readonly dagRunId: string
   readonly plan: DagExecutionPlan
@@ -103,12 +126,25 @@ export class DagRunner {
   private readonly runnerFactory?: DagRunnerOptions['runnerFactory']
   private running = false
   private abortedOnFail = false
+  private readonly maxRunTokens: number
+  private readonly maxRunDurationMs: number
 
   constructor(plan: DagExecutionPlan, directory: string, options?: DagRunnerOptions) {
     this.plan = plan
     this.directory = directory
     this.dagRunId = options?.dagRunId ?? randomUUID()
-    this.maxConcurrency = Math.max(1, options?.maxConcurrency ?? 4)
+    const requestedConcurrency = Number.isFinite(options?.maxConcurrency)
+      ? Math.floor(options!.maxConcurrency as number)
+      : 4
+    this.maxConcurrency = Math.min(MAX_NODE_CONCURRENCY, Math.max(1, requestedConcurrency))
+    this.maxRunTokens =
+      options?.maxRunTokens !== undefined && options.maxRunTokens > 0
+        ? options.maxRunTokens
+        : DEFAULT_MAX_RUN_TOKENS
+    this.maxRunDurationMs =
+      options?.maxRunDurationMs !== undefined && options.maxRunDurationMs > 0
+        ? options.maxRunDurationMs
+        : DEFAULT_MAX_RUN_DURATION_MS
     this.profiles = options?.profiles ?? profileStore
     this.providers = options?.providers ?? providerRegistry
     this.defaultTools = options?.tools
@@ -243,6 +279,23 @@ export class DagRunner {
     })
   }
 
+  /**
+   * Stops the run as failed: records why, prevents further dispatch, and aborts
+   * every in-flight node. Unlike abort(), the run ends 'failed', not 'cancelled'.
+   */
+  private haltRun(reason: string): void {
+    if (this.abortedOnFail || this.abortController.signal.aborted) return
+    this.abortedOnFail = true
+    if (!this.error) this.error = reason
+    for (const runner of this.activeRunners.values()) {
+      try {
+        runner.abort()
+      } catch {
+        // ignore
+      }
+    }
+  }
+
   private handleNodeFailure(
     nodeDef: DagNodeDefinition,
     waveIndex: number,
@@ -282,15 +335,7 @@ export class DagRunner {
     })
 
     if (nodeDef.policy?.abortOnFail) {
-      this.abortedOnFail = true
-      this.error = `Node "${nodeDef.id}" failed with abortOnFail: ${errorMessage}`
-      for (const runner of this.activeRunners.values()) {
-        try {
-          runner.abort()
-        } catch {
-          // ignore
-        }
-      }
+      this.haltRun(`Node "${nodeDef.id}" failed with abortOnFail: ${errorMessage}`)
     }
   }
 
@@ -339,9 +384,7 @@ export class DagRunner {
         provider: 'mock',
         model: 'mock'
       }
-      profile = nodeDef.maxTurns !== undefined
-        ? { ...baseProfile, maxTurns: nodeDef.maxTurns }
-        : baseProfile
+      profile = withNodeTurns(baseProfile, nodeDef.maxTurns)
       adapter = this.providers.isSupported(profile.provider)
         ? this.providers.resolve(profile.provider)
         : ({
@@ -356,9 +399,7 @@ export class DagRunner {
         this.handleNodeFailure(nodeDef, waveIndex, `Profile not found: "${nodeDef.profileId}".`, emitEvent)
         return
       }
-      profile = nodeDef.maxTurns !== undefined
-        ? { ...baseProfile, maxTurns: nodeDef.maxTurns }
-        : baseProfile
+      profile = withNodeTurns(baseProfile, nodeDef.maxTurns)
 
       if (!this.providers.isSupported(profile.provider)) {
         this.handleNodeFailure(
@@ -376,25 +417,27 @@ export class DagRunner {
     const nodeArtifacts: DagNodeArtifact[] = []
     const nodeTools = new ToolRegistry()
 
-    if (this.defaultTools) {
-      for (const def of this.defaultTools.forProfile(profile)) {
-        const reg = this.defaultTools.resolve(def.name)
-        if (reg) {
-          nodeTools.register(reg.definition, async (args, ctx) => {
-            const res = await reg.executor(args, ctx)
-            if (res.artifacts) {
-              nodeArtifacts.push(...res.artifacts)
-            }
-            return res
-          })
-        }
-      }
-    } else {
-      registerBuiltins(nodeTools)
+    const sourceTools = this.defaultTools ?? (() => {
+      const registry = new ToolRegistry()
+      registerBuiltins(registry)
       try {
-        loadCustomTools(nodeTools, this.directory)
+        loadCustomTools(registry, this.directory)
       } catch {
         // Fall back to builtins if custom directory loading encounters errors
+      }
+      return registry
+    })()
+
+    for (const def of sourceTools.forProfile(profile)) {
+      const reg = sourceTools.resolve(def.name)
+      if (reg) {
+        nodeTools.register(reg.definition, async (args, ctx) => {
+          const res = await reg.executor(args, ctx)
+          if (res.artifacts) {
+            nodeArtifacts.push(...res.artifacts)
+          }
+          return res
+        })
       }
     }
 
@@ -437,6 +480,13 @@ export class DagRunner {
       this.totalUsage.input += result.usage.input
       this.totalUsage.output += result.usage.output
       this.totalUsage.reasoning += (result.usage.reasoning ?? 0)
+
+      const spent = this.totalUsage.input + this.totalUsage.output + this.totalUsage.reasoning
+      if (spent > this.maxRunTokens) {
+        this.haltRun(
+          `Run token budget exceeded: ${spent} tokens used, limit ${this.maxRunTokens}.`
+        )
+      }
 
       if (result.finishReason === 'complete') {
         const output: DagNodeOutput = {
@@ -493,11 +543,20 @@ export class DagRunner {
    * evaluates conditions and failure policies, and collects outputs.
    */
   async run(onEvent?: (event: DagEvent) => void): Promise<DagRunState> {
+    if (this.running) {
+      throw new Error(`DAG run ${this.dagRunId} has already been started.`)
+    }
     this.running = true
     this.startedAt = Date.now()
 
+    // A throwing listener (e.g. a destroyed webContents) must never be able to
+    // fail a node that succeeded or reject run().
     const emitEvent = (event: DagEvent): void => {
-      onEvent?.(event)
+      try {
+        onEvent?.(event)
+      } catch {
+        // listener errors are not run failures
+      }
     }
 
     if (this.abortController.signal.aborted || this.status === 'cancelled') {
@@ -511,6 +570,11 @@ export class DagRunner {
       })
       return this.getState()
     }
+
+    const runTimer = setTimeout(() => {
+      this.haltRun(`Run exceeded its ${this.maxRunDurationMs}ms time limit.`)
+    }, this.maxRunDurationMs)
+    runTimer.unref?.()
 
     this.status = 'running'
     emitEvent({
@@ -566,11 +630,28 @@ export class DagRunner {
       // Execute eligible nodes with concurrency throttling
       if (eligibleNodes.length > 0) {
         const tasks = eligibleNodes.map((nodeDef) => () => this.executeNode(nodeDef, waveIndex, emitEvent))
-        await runWithConcurrency(
+        const settled = await runWithConcurrency(
           tasks,
           this.maxConcurrency,
           () => this.abortController.signal.aborted || this.abortedOnFail
         )
+
+        // executeNode can reject before its own try/catch is reached (profile
+        // lookup, provider resolution, tool registry, runner construction).
+        // Those rejections must be recorded, or the node is left 'running' and
+        // the run reports 'completed' despite having failed.
+        settled.forEach((result, index) => {
+          if (result?.status !== 'rejected') return
+          const nodeDef = eligibleNodes[index]
+          if (!nodeDef) return
+          if (this.nodeStates.get(nodeDef.id) === 'failed') return
+          this.handleNodeFailure(
+            nodeDef,
+            waveIndex,
+            result.reason instanceof Error ? result.reason.message : String(result.reason),
+            emitEvent
+          )
+        })
       }
 
       emitEvent({
@@ -585,6 +666,7 @@ export class DagRunner {
       }
     }
 
+    clearTimeout(runTimer)
     this.completedAt = Date.now()
 
     if ((this.status as DagRunStatus) === 'cancelled' || this.abortController.signal.aborted) {
@@ -592,9 +674,18 @@ export class DagRunner {
     } else if (this.abortedOnFail) {
       this.status = 'failed'
     } else {
-      const anyNodeFailed = Array.from(this.nodeStates.values()).some((st) => st === 'failed')
-      if (anyNodeFailed) {
+      const states = Array.from(this.nodeStates.entries())
+      const anyNodeFailed = states.some(([, st]) => st === 'failed')
+      // A node still 'pending' or 'running' after the loop never reached a
+      // terminal state, so the run did not actually succeed.
+      const stranded = states
+        .filter(([, st]) => st === 'pending' || st === 'running')
+        .map(([id]) => id)
+      if (anyNodeFailed || stranded.length > 0) {
         this.status = 'failed'
+        if (!this.error && stranded.length > 0) {
+          this.error = `Run ended with ${stranded.length} node(s) in a non-terminal state: ${stranded.join(', ')}.`
+        }
       } else {
         this.status = 'completed'
       }

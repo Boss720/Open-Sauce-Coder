@@ -11,13 +11,12 @@
  */
 
 import { describe, expect, it, vi } from 'vitest'
-import { DagRunner, type DagRunnerOptions } from '../harness/dag/runner'
+import { DagRunner } from '../harness/dag/runner'
 import { DagController } from '../harness/dag/controller'
 import type {
   DagEvent,
   DagExecutionPlan,
   DagNodeDefinition,
-  DagNodeOutput,
   WorkflowDefinition
 } from '../harness/dag/types'
 import type { AgentRunner, RunnerEvent, RunnerResult } from '../harness/runner'

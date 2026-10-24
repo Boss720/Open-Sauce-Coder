@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { loadIpc, type IpcHarness, HOSTILE_STRINGS, HOSTILE_OBJECTS, expectRejectsAll, stubEvent } from './ipcHarness'
+import { loadIpc, type IpcHarness, HOSTILE_STRINGS, HOSTILE_OBJECTS, expectRejectsAll } from './ipcHarness'
 
 describe('ipc projects channels', () => {
   let h: IpcHarness

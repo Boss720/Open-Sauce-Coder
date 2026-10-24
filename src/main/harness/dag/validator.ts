@@ -6,6 +6,7 @@
  * execution waves (minimizing depth for flat worker waves).
  */
 
+import { extractTemplateNodeRefs } from './interpolator'
 import type {
   DagExecutionPlan,
   DagNodeDefinition,
@@ -88,6 +89,11 @@ function findCycleDfs(nodes: DagNodeDefinition[]): string[] | null {
 /**
  * Validates a workflow definition and generates an execution plan with topological waves.
  */
+/** Upper bound on nodes per workflow: each node is a paid agent run. */
+export const MAX_WORKFLOW_NODES = 128
+/** Mirrors the 1..500 hard cap AgentProfile.maxTurns is validated against. */
+export const MAX_NODE_TURNS = 500
+
 export function validateWorkflow(workflow: WorkflowDefinition): ValidationResult {
   const errors: string[] = []
 
@@ -109,6 +115,16 @@ export function validateWorkflow(workflow: WorkflowDefinition): ValidationResult
 
   if (workflow.nodes.length === 0) {
     return { valid: false, errors: [...errors, 'Workflow must contain at least one node.'] }
+  }
+
+  if (workflow.nodes.length > MAX_WORKFLOW_NODES) {
+    return {
+      valid: false,
+      errors: [
+        ...errors,
+        `Workflow has ${workflow.nodes.length} nodes; the maximum is ${MAX_WORKFLOW_NODES}.`
+      ]
+    }
   }
 
   const seenIds = new Set<string>()
@@ -141,6 +157,16 @@ export function validateWorkflow(workflow: WorkflowDefinition): ValidationResult
       errors.push(`Node "${node.id}" must specify a prompt.`)
     }
 
+    if (
+      node.maxTurns !== undefined &&
+      (typeof node.maxTurns !== 'number' ||
+        !Number.isInteger(node.maxTurns) ||
+        node.maxTurns < 1 ||
+        node.maxTurns > MAX_NODE_TURNS)
+    ) {
+      errors.push(`Node "${node.id}" maxTurns must be an integer between 1 and ${MAX_NODE_TURNS}.`)
+    }
+
     if (node.dependencies !== undefined && !Array.isArray(node.dependencies)) {
       errors.push(`Node "${node.id}" dependencies must be an array.`)
     }
@@ -160,6 +186,17 @@ export function validateWorkflow(workflow: WorkflowDefinition): ValidationResult
         errors.push(`Node "${node.id}" cannot depend on itself.`)
       } else if (!nodeMap.has(depId)) {
         errors.push(`Node "${node.id}" depends on unknown node "${depId}".`)
+      }
+    }
+
+    // A prompt may only reference declared dependencies. The interpolator throws
+    // on anything else at run time, after earlier waves have already spent budget,
+    // so reject it up front.
+    for (const refId of extractTemplateNodeRefs(node.prompt)) {
+      if (!deps.includes(refId)) {
+        errors.push(
+          `Node "${node.id}" prompt references "{{inputs.${refId}}}", but "${refId}" is not listed in its dependencies.`
+        )
       }
     }
 

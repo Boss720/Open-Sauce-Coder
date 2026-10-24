@@ -193,7 +193,8 @@ export class AgentRunner {
           routingSuffix: this.profile.routingSuffix,
           caching: this.profile.caching,
           billingRoute: this.profile.billingRoute,
-          baseUrl: this.profile.baseUrl
+          baseUrl: this.profile.baseUrl,
+          directory: this.directory
         }
 
         let streamedThinking = false

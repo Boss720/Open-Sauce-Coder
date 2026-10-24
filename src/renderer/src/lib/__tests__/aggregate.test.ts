@@ -5,9 +5,9 @@ import type { MessageWithParts, Provider } from '../types'
 describe('aggregate helpers', () => {
   it('sessionCost sums message costs correctly', () => {
     const messages: MessageWithParts[] = [
-      { info: { role: 'assistant', cost: 0.0012 } as any, parts: [] },
-      { info: { role: 'assistant', cost: 0.0034 } as any, parts: [] },
-      { info: { role: 'user' } as any, parts: [] }
+      { info: { role: 'assistant', cost: 0.0012 } as unknown as MessageWithParts['info'], parts: [] },
+      { info: { role: 'assistant', cost: 0.0034 } as unknown as MessageWithParts['info'], parts: [] },
+      { info: { role: 'user' } as unknown as MessageWithParts['info'], parts: [] }
     ]
     expect(sessionCost(messages)).toBeCloseTo(0.0046, 5)
   })
@@ -22,7 +22,7 @@ describe('aggregate helpers', () => {
         info: {
           role: 'assistant',
           tokens: { input: 1000, output: 500, reasoning: 0, cache: { read: 0, write: 0 } }
-        } as any,
+        } as unknown as MessageWithParts['info'],
         parts: []
       }
     ]
@@ -48,7 +48,7 @@ describe('aggregate helpers', () => {
         env: [],
         options: {},
         models: {
-          'claude-3-5-sonnet': { id: 'claude-3-5-sonnet', name: 'Sonnet', limit: { context: 200000 } } as any
+          'claude-3-5-sonnet': { id: 'claude-3-5-sonnet', name: 'Sonnet', limit: { context: 200000 } } as unknown as Provider['models'][string]
         }
       }
     ]

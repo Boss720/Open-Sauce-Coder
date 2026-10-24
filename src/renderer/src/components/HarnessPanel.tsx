@@ -6,6 +6,7 @@ import './HarnessPanel.css'
 
 /** Harness providers supported by the main-process registry (providers/registry.ts). */
 const PROVIDER_OPTIONS = [
+  { value: 'opencode', label: 'OpenCode (Local)' },
   { value: 'anthropic', label: 'Anthropic (Claude)' },
   { value: 'openai', label: 'OpenAI (GPT-4o / o-series)' },
   { value: 'google', label: 'Google Gemini' },
@@ -22,6 +23,7 @@ const PROVIDER_OPTIONS = [
 
 /** Recommended model presets per provider for quick selection in profile editor. */
 const MODEL_PRESETS: Record<string, string[]> = {
+  opencode: ['default', 'claude-3-7-sonnet', 'gemini-2.5-pro'],
   anthropic: ['claude-3-7-sonnet-latest', 'claude-3-5-haiku-latest'],
   openai: ['gpt-4o', 'gpt-4o-mini', 'o3-mini'],
   google: ['gemini-2.5-pro', 'gemini-2.5-flash'],
@@ -243,7 +245,7 @@ export function HarnessPanel({ compact = false }: { compact?: boolean }): JSX.El
   }, [loadHarnessProfiles, loadHarnessTools])
 
   const hasKey = (providerId: string): boolean => {
-    if (providerId === 'custom') return true
+    if (providerId === 'custom' || providerId === 'opencode') return true
     const row = storedKeys.find((k) => k.providerID === providerId)
     return Boolean(row)
   }

@@ -339,9 +339,12 @@ export function registerBuiltins(registry: ToolRegistry): void {
         : context.directory
 
       try {
-        const rgArgs = ['-n', pattern]
+        const rgArgs = ['-n', '-i', pattern]
         if (typeof args.include === 'string' && args.include) {
           rgArgs.push('-g', args.include)
+        }
+        for (const directory of IGNORED_GREP_DIRS) {
+          rgArgs.push('-g', `!**/${directory}/**`)
         }
         rgArgs.push(searchPath)
 

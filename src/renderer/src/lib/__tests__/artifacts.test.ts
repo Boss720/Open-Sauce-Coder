@@ -29,7 +29,7 @@ describe('Artifact detection & extraction (artifacts.ts)', () => {
   it('extracts HTML, SVG, and Mermaid artifacts from assistant messages', () => {
     const messages: MessageWithParts[] = [
       {
-        info: { id: 'm1', sessionID: 's1', role: 'assistant', time: { created: 100 } } as any,
+        info: { id: 'm1', sessionID: 's1', role: 'assistant', time: { created: 100 } } as unknown as MessageWithParts['info'],
         parts: [
           {
             id: 'p1',
@@ -37,11 +37,11 @@ describe('Artifact detection & extraction (artifacts.ts)', () => {
             sessionID: 's1',
             type: 'text',
             text: 'Here is a custom button:\n```html button.html\n<button className="btn">Click me</button>\n```'
-          } as any
+          }
         ]
       },
       {
-        info: { id: 'm2', sessionID: 's1', role: 'assistant', time: { created: 101 } } as any,
+        info: { id: 'm2', sessionID: 's1', role: 'assistant', time: { created: 101 } } as unknown as MessageWithParts['info'],
         parts: [
           {
             id: 'p2',
@@ -49,7 +49,7 @@ describe('Artifact detection & extraction (artifacts.ts)', () => {
             sessionID: 's1',
             type: 'text',
             text: 'And here is a diagram:\n```mermaid\ngraph TD;\n  A-->B;\n```'
-          } as any
+          }
         ]
       }
     ]
@@ -74,7 +74,7 @@ describe('Artifact detection & extraction (artifacts.ts)', () => {
 
     const messages: MessageWithParts[] = [
       {
-        info: { id: 'm1', sessionID: 's1', role: 'assistant', time: { created: 100 } } as any,
+        info: { id: 'm1', sessionID: 's1', role: 'assistant', time: { created: 100 } } as unknown as MessageWithParts['info'],
         parts: [
           {
             id: 'p1',
@@ -82,7 +82,7 @@ describe('Artifact detection & extraction (artifacts.ts)', () => {
             sessionID: 's1',
             type: 'text',
             text: `Short:\n${smallSnippet}\n\nLong:\n${longCodeFence}`
-          } as any
+          }
         ]
       }
     ]
@@ -96,7 +96,7 @@ describe('Artifact detection & extraction (artifacts.ts)', () => {
   it('tracks multiple versions of the same artifact across messages', () => {
     const messages: MessageWithParts[] = [
       {
-        info: { id: 'm1', sessionID: 's1', role: 'assistant', time: { created: 100 } } as any,
+        info: { id: 'm1', sessionID: 's1', role: 'assistant', time: { created: 100 } } as unknown as MessageWithParts['info'],
         parts: [
           {
             id: 'p1',
@@ -104,11 +104,11 @@ describe('Artifact detection & extraction (artifacts.ts)', () => {
             sessionID: 's1',
             type: 'text',
             text: '```html app.html\n<div>Version 1</div>\n```'
-          } as any
+          }
         ]
       },
       {
-        info: { id: 'm2', sessionID: 's1', role: 'assistant', time: { created: 101 } } as any,
+        info: { id: 'm2', sessionID: 's1', role: 'assistant', time: { created: 101 } } as unknown as MessageWithParts['info'],
         parts: [
           {
             id: 'p2',
@@ -116,7 +116,7 @@ describe('Artifact detection & extraction (artifacts.ts)', () => {
             sessionID: 's1',
             type: 'text',
             text: 'Here is the updated app:\n```html app.html\n<div>Version 2</div>\n```'
-          } as any
+          }
         ]
       }
     ]

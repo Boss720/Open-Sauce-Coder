@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { AgentRunner, canonicalJson, parseToolArgs, truncateToolOutput, type RunnerEvent } from '../harness/runner'
+import { AgentRunner, canonicalJson, parseToolArgs, type RunnerEvent } from '../harness/runner'
 import { ToolRegistry } from '../harness/tools/registry'
 import type { AgentProfile } from '../harness/profiles'
 import type { ChatResponse, ProviderAdapter } from '../harness/providers/adapter'
@@ -298,7 +298,7 @@ describe('AgentRunner', () => {
 
     expect(result.finishReason).toBe('complete')
     expect(noargExecutor).toHaveBeenCalledTimes(1)
-    expect((noargExecutor.mock.calls as any)[0][0]).toEqual({})
+    expect(noargExecutor.mock.calls[0][0]).toEqual({})
   })
 
   it('truncates individual tool output exceeding 30,000 characters before appending to messages', async () => {

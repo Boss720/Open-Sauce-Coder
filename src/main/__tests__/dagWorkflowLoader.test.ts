@@ -6,7 +6,9 @@ import {
   deleteWorkflow,
   getWorkflow,
   listWorkflows,
-  saveWorkflow
+  loadWorkflow,
+  saveWorkflow,
+  seedBuiltinWorkflows
 } from '../harness/dag/workflowLoader'
 import type { WorkflowDefinition } from '../harness/dag/types'
 
@@ -46,19 +48,63 @@ describe('WorkflowLoader', () => {
     }
   })
 
-  it('returns an empty list when .opencode/workflows does not exist', async () => {
+  it('returns an empty list by default when .opencode/workflows does not exist', async () => {
     const list = await listWorkflows(tempDir)
     expect(list).toEqual([])
+  })
+
+  it('returns built-in workflows when includeBuiltin is true even if .opencode/workflows does not exist', async () => {
+    const list = await listWorkflows(tempDir, { includeBuiltin: true })
+    expect(list.length).toBeGreaterThanOrEqual(2)
+    const ids = list.map((w) => w.id)
+    expect(ids).toContain('code-review-fix')
+    expect(ids).toContain('feature-implementation')
   })
 
   it('saves and lists workflows correctly', async () => {
     await saveWorkflow(tempDir, sampleWorkflow)
 
-    const list = await listWorkflows(tempDir)
-    expect(list).toHaveLength(1)
-    expect(list[0].id).toBe('sample-workflow')
-    expect(list[0].name).toBe('Sample Workflow')
-    expect(list[0].nodes).toHaveLength(2)
+    // Default: disk only
+    const diskList = await listWorkflows(tempDir)
+    expect(diskList).toHaveLength(1)
+    expect(diskList[0].id).toBe('sample-workflow')
+    expect(diskList[0].name).toBe('Sample Workflow')
+    expect(diskList[0].nodes).toHaveLength(2)
+
+    // With includeBuiltin: merges disk and builtins
+    const mergedList = await listWorkflows(tempDir, { includeBuiltin: true })
+    expect(mergedList).toHaveLength(3)
+    const ids = mergedList.map((w) => w.id)
+    expect(ids).toContain('sample-workflow')
+    expect(ids).toContain('code-review-fix')
+    expect(ids).toContain('feature-implementation')
+    const found = mergedList.find((w) => w.id === 'sample-workflow')
+    expect(found?.name).toBe('Sample Workflow')
+    expect(found?.nodes).toHaveLength(2)
+  })
+
+  it('merges disk workflows with disk workflow overriding built-in workflow by ID', async () => {
+    const customReview: WorkflowDefinition = {
+      id: 'code-review-fix',
+      name: 'Custom Review Workflow Override',
+      description: 'Project-specific override of code review',
+      nodes: [
+        {
+          id: 'custom_step',
+          name: 'Custom Step',
+          profileId: 'gemini-flash',
+          prompt: 'Custom review prompt'
+        }
+      ]
+    }
+    await saveWorkflow(tempDir, customReview)
+
+    const list = await listWorkflows(tempDir, { includeBuiltin: true })
+    const review = list.find((w) => w.id === 'code-review-fix')
+    expect(review).toBeDefined()
+    expect(review?.name).toBe('Custom Review Workflow Override')
+    expect(review?.nodes).toHaveLength(1)
+    expect(list.map((w) => w.id)).toContain('feature-implementation')
   })
 
   it('loads a specific workflow by id via getWorkflow', async () => {
@@ -71,9 +117,66 @@ describe('WorkflowLoader', () => {
     expect(loaded?.nodes[1].id).toBe('step_2')
   })
 
+  it('loads built-in workflow fallback by id via getWorkflow when file not on disk', async () => {
+    const loaded = await getWorkflow(tempDir, 'code-review-fix')
+    expect(loaded).toBeDefined()
+    expect(loaded?.id).toBe('code-review-fix')
+    expect(loaded?.name).toBe('Code Review -> Test Writer -> Fixer')
+  })
+
   it('returns null when loading a non-existent workflow id', async () => {
     const loaded = await getWorkflow(tempDir, 'missing-workflow')
     expect(loaded).toBeNull()
+  })
+
+  it('loads built-in workflow fallback by ID when file not on disk', async () => {
+    const wf = await loadWorkflow(tempDir, 'code-review-fix')
+    expect(wf.id).toBe('code-review-fix')
+    expect(wf.name).toBe('Code Review -> Test Writer -> Fixer')
+    expect(wf.nodes.length).toBeGreaterThan(0)
+
+    const wfWithExt = await loadWorkflow(tempDir, 'code-review-fix.json')
+    expect(wfWithExt.id).toBe('code-review-fix')
+
+    const wfFeature = await loadWorkflow(tempDir, 'feature-implementation')
+    expect(wfFeature.id).toBe('feature-implementation')
+
+    await expect(loadWorkflow(tempDir, 'missing-workflow')).rejects.toThrow(
+      /Workflow not found/
+    )
+  })
+
+  it('loads disk workflow instead of built-in when disk file exists in loadWorkflow', async () => {
+    const customReview: WorkflowDefinition = {
+      id: 'code-review-fix',
+      name: 'Custom On Disk Review',
+      description: 'Disk override',
+      nodes: [
+        {
+          id: 'only_step',
+          name: 'Only Step',
+          profileId: 'gemini-flash',
+          prompt: 'Do something'
+        }
+      ]
+    }
+    await saveWorkflow(tempDir, customReview)
+
+    const loaded = await loadWorkflow(tempDir, 'code-review-fix')
+    expect(loaded.name).toBe('Custom On Disk Review')
+  })
+
+  it('seeds built-in workflows to disk when .opencode/workflows is empty', async () => {
+    const seeded = await seedBuiltinWorkflows(tempDir)
+    expect(seeded.length).toBe(2)
+
+    // Verify files were actually written to disk
+    const list = await listWorkflows(tempDir)
+    expect(list.length).toBeGreaterThanOrEqual(2)
+
+    // Calling seed again does not duplicate or overwrite existing files
+    const secondSeeded = await seedBuiltinWorkflows(tempDir)
+    expect(secondSeeded).toEqual([])
   })
 
   it('skips invalid JSON or malformed workflow files when listing', async () => {
@@ -95,10 +198,17 @@ describe('WorkflowLoader', () => {
     }
     writeFileSync(cyclicPath, JSON.stringify(cyclicWorkflow), 'utf-8')
 
-    const list = await listWorkflows(tempDir)
-    // Only the valid sampleWorkflow should be returned
-    expect(list).toHaveLength(1)
-    expect(list[0].id).toBe('sample-workflow')
+    // Default disk-only listing skips corrupt and cyclic
+    const diskList = await listWorkflows(tempDir)
+    expect(diskList).toHaveLength(1)
+    expect(diskList[0].id).toBe('sample-workflow')
+
+    // Merged listing skips corrupt and cyclic while including built-ins
+    const list = await listWorkflows(tempDir, { includeBuiltin: true })
+    expect(list.map((w) => w.id)).toContain('sample-workflow')
+    expect(list.map((w) => w.id)).toContain('code-review-fix')
+    expect(list.map((w) => w.id)).not.toContain('corrupt')
+    expect(list.map((w) => w.id)).not.toContain('cycle')
   })
 
   it('rejects saving invalid workflow definitions', async () => {
@@ -145,6 +255,10 @@ describe('WorkflowLoader', () => {
     }
 
     await expect(saveWorkflow(tempDir, escapingWorkflow)).rejects.toThrow(
+      /strictly inside the project directory/i
+    )
+
+    await expect(loadWorkflow(tempDir, '../../escaped')).rejects.toThrow(
       /strictly inside the project directory/i
     )
   })

@@ -141,11 +141,19 @@ export const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
   }
 ]
 
+export const OPENCODE_PROVIDER: ProviderCatalogEntry = {
+  providerID: 'opencode',
+  envVar: '',
+  label: 'OpenCode (Local Server)',
+  docsUrl: 'https://github.com/opencode-ai/opencode'
+}
+
 /**
  * Look up a provider catalog entry by providerID (case-sensitive, exact match).
  * Returns undefined if not found.
  */
 export function catalogByProvider(providerID: string): ProviderCatalogEntry | undefined {
+  if (providerID === 'opencode') return OPENCODE_PROVIDER
   return PROVIDER_CATALOG.find((entry) => entry.providerID === providerID)
 }
 

@@ -116,3 +116,11 @@ Plan delivered at `docs/plans/nanogpt-agentic-harness/PLAN.md`. The current impl
 - Reviews: read-only router lane reported 137 scoped existing tests pass and identified missing cases; provider lane found existing model authorization is exact-catalog-bound; official Google rate-limit docs say numbers vary by project/account. Worker findings are leads, not verification of this implementation.
 - Known boundary: no real inference, account quota refresh, external-client usage accounting, or billing proof has been performed. The screenshot numerators are historical 28-day peak use, not current usage, and account limits can vary by project/tier. No live Electron window smoke test was run; the production bundle passed, and `RoutingPanel` is mounted in Settings under “Live Model Health.”
 - Primary references checked: [Google model IDs and Gemini 3.8 Flash capabilities](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash), [Gemini 3.1 Flash-Lite](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-lite), [Gemma on the Gemini API](https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api), and [Gemini API rate limits](https://ai.google.dev/gemini-api/docs/rate-limits).
+
+## 2026-10-18 Lint warning cleanup
+
+- Objective: remove all 163 ESLint warnings without weakening lint rules or changing intended behavior. Root C:\Users\Hp\Dev\opencode-desktop; branch harness; existing dirty/untracked work preserved.
+- Wave 1 ownership: main-tests worker owns src/main/__tests__ warning files only; renderer-core-tests worker owns sessionSlice.test.ts, gitSlice.test.ts, eventSlice.test.ts; renderer-other-tests worker owns remaining renderer test warning files. Coordinator owns production warning files and PROGRESS.md.
+- Model choice: gpt-6-luna for bounded test typing cleanup; coordinator handles production types and hook dependencies.
+- Verification: scoped lint and typecheck per lane; coordinator reviews changes against captured pre-cleanup contents, then runs full typecheck, lint, tests, and production build. No new tests required for type/unused-symbol cleanup.
+- Status: baseline captured (163 warnings, 0 errors); independent lanes ready for dispatch.

@@ -10,6 +10,7 @@ import { GeminiAdapter } from './gemini'
 import { AnthropicAdapter } from './anthropic'
 import { OpenAiAdapter } from './openai'
 import { OpenAiCompatibleAdapter, OPENAI_COMPATIBLE_CONFIGS } from './openaiCompatible'
+import { OpencodeBridgeAdapter } from './opencodeBridge'
 
 export class ProviderRegistry {
   private adapters = new Map<string, ProviderAdapter>()
@@ -71,6 +72,8 @@ export class ProviderRegistry {
         if (!config) throw new Error(`Missing OpenAI-compatible configuration for: ${providerId}`)
         return new OpenAiCompatibleAdapter(config)
       }
+      case 'opencode':
+        return new OpencodeBridgeAdapter()
       default:
         throw new Error(
           `Unsupported harness provider: "${providerId}". ` +
@@ -92,7 +95,8 @@ const SUPPORTED_PROVIDERS = new Set([
   'moonshot',
   'xai',
   'cerebras',
-  'custom'
+  'custom',
+  'opencode'
 ])
 
 /** Main-process singleton instance. */

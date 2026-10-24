@@ -1,4 +1,5 @@
 import { builtinModules } from 'node:module'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'electron-vite'
 import react from '@vitejs/plugin-react'
@@ -76,7 +77,10 @@ export default defineConfig({
 
   renderer: {
     root: r('./src/renderer'),
-    cacheDir: r('./node_modules/.vite'),
+    // Keep Vite's optimizer cache rooted at the invocation cwd. The repo may be
+    // opened through a Windows junction, while this config resolves through the
+    // physical path; mixing those paths makes Vite fail to match esbuild outputs.
+    cacheDir: join(process.cwd(), 'node_modules', '.vite'),
     plugins: [react(), prodCspPlugin],
     resolve: {
       alias: {

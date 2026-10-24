@@ -297,7 +297,7 @@ describe('GeminiAdapter and toGeminiContents mapping', () => {
         }
       ]
     }
-    const callsWithId = extractGeminiToolCalls(responseWithId as any)
+    const callsWithId = extractGeminiToolCalls(responseWithId as unknown as Parameters<typeof extractGeminiToolCalls>[0])
     expect(callsWithId).toHaveLength(1)
     expect(callsWithId?.[0].id).toBe('call_unique_777')
     expect(callsWithId?.[0].function.name).toBe('fs_write')
@@ -319,7 +319,7 @@ describe('GeminiAdapter and toGeminiContents mapping', () => {
         }
       ]
     }
-    const callsWithoutId = extractGeminiToolCalls(responseWithoutId as any)
+    const callsWithoutId = extractGeminiToolCalls(responseWithoutId as unknown as Parameters<typeof extractGeminiToolCalls>[0])
     expect(callsWithoutId).toHaveLength(1)
     expect(callsWithoutId?.[0].id).toBe('fs_list')
     expect(callsWithoutId?.[0].function.name).toBe('fs_list')
@@ -341,8 +341,8 @@ describe('GeminiAdapter and toGeminiContents mapping', () => {
       }
     }
 
-    expect(extractGeminiText(response as any)).toBe('Part 1. Part 2.')
-    expect(extractGeminiUsage(response as any)).toEqual({
+    expect(extractGeminiText(response as unknown as Parameters<typeof extractGeminiToolCalls>[0])).toBe('Part 1. Part 2.')
+    expect(extractGeminiUsage(response as unknown as Parameters<typeof extractGeminiToolCalls>[0])).toEqual({
       input: 15,
       output: 30,
       reasoning: 10
@@ -433,7 +433,7 @@ describe('AnthropicAdapter', () => {
   })
 
   it('streams text deltas, thinking deltas, and tool calls with correct format', async () => {
-    let capturedBody: any = null
+    let capturedBody: Record<string, unknown> | null = null
     const sseLines = [
       'data: {"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":25}}}',
       'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}',
@@ -496,7 +496,7 @@ describe('AnthropicAdapter', () => {
 
     // Extended thinking safety: temperature and top_p must be omitted when thinking is enabled
     expect(capturedBody).not.toBeNull()
-    const body = capturedBody
+    const body = capturedBody!
     expect(body.temperature).toBeUndefined()
     expect(body.top_p).toBeUndefined()
     expect(body.thinking).toEqual({ type: 'enabled', budget_tokens: 4096 })
@@ -505,7 +505,7 @@ describe('AnthropicAdapter', () => {
   })
 
   it('groups contiguous tool results into single user turn with tool_result blocks', async () => {
-    let capturedBody: any = null
+    let capturedBody: Record<string, unknown> | null = null
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
       capturedBody = JSON.parse(String(init.body))
       return sseResponse([
@@ -539,7 +539,7 @@ describe('AnthropicAdapter', () => {
 
     await adapter.chat(request)
     expect(capturedBody).not.toBeNull()
-    const messages = capturedBody.messages as Array<{ role: string; content: unknown }>
+    const messages = capturedBody!.messages as Array<{ role: string; content: unknown }>
     expect(messages).toHaveLength(3) // user, assistant, user (with 2 tool results)
     expect(messages[2].role).toBe('user')
     expect(messages[2].content).toEqual([
@@ -555,7 +555,7 @@ describe('OpenAiAdapter', () => {
   })
 
   it('adapts parameters for reasoning models (o1, o3-mini)', async () => {
-    let capturedBody: any = null
+    let capturedBody: Record<string, unknown> | null = null
     const sseLines = [
       'data: {"id":"chatcmpl-o1","choices":[{"delta":{"reasoning_content":"Thinking...","content":"Answer"}}],"usage":{"prompt_tokens":15,"completion_tokens":20,"completion_tokens_details":{"reasoning_tokens":12}}}',
       'data: [DONE]'
@@ -588,7 +588,7 @@ describe('OpenAiAdapter', () => {
 
     // Reasoning model adaptations
     expect(capturedBody).not.toBeNull()
-    const body = capturedBody
+    const body = capturedBody!
     expect(body.temperature).toBeUndefined()
     expect(body.max_completion_tokens).toBe(5000)
     expect(body.reasoning_effort).toBe('medium')
@@ -599,7 +599,7 @@ describe('OpenAiAdapter', () => {
   })
 
   it('handles standard models (gpt-4o) with temperature and max_tokens', async () => {
-    let capturedBody: any = null
+    let capturedBody: Record<string, unknown> | null = null
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
       capturedBody = JSON.parse(String(init.body))
       return sseResponse([
@@ -619,7 +619,7 @@ describe('OpenAiAdapter', () => {
 
     const response = await adapter.chat(request)
     expect(response.content).toBe('Standard response')
-    const body = capturedBody
+    const body = capturedBody!
     expect(body.temperature).toBe(0.5)
     expect(body.max_tokens).toBe(2048)
     expect(body.max_completion_tokens).toBeUndefined()
@@ -667,7 +667,7 @@ describe('OpenAiCompatibleAdapter and ThinkTagStreamer', () => {
   })
 
   it('sanitizes assistant content to empty string when tool calls are present', async () => {
-    let capturedBody: any = null
+    let capturedBody: Record<string, unknown> | null = null
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
       capturedBody = JSON.parse(String(init.body))
       return sseResponse([
@@ -697,7 +697,7 @@ describe('OpenAiCompatibleAdapter and ThinkTagStreamer', () => {
 
     await adapter.chat(request)
     expect(capturedBody).not.toBeNull()
-    const msgs = capturedBody.messages as Array<{ role: string; content: unknown }>
+    const msgs = capturedBody!.messages as Array<{ role: string; content: unknown }>
     expect(msgs[1].role).toBe('assistant')
     expect(msgs[1].content).toBe('') // Empty string, never null (prevents 400 on Groq/Mistral)
   })

@@ -269,7 +269,14 @@ Every handler returns `Promise<T>` and **throws** on failure (renderer catches).
                         // session and closing it tears the session down.
 'oc:liveWindow:close'          () => void
 'oc:liveWindow:setAlwaysOnTop' (on: boolean) => void
-                        // no-op when the window does not exist.
+// --- Multi-Agent Directed Acyclic Graph (DAG) orchestration (src/main/harness/dag/) ---
+'oc:dag:listWorkflows' (directory: string) => WorkflowSummary[]   // directory required; filePath absent for builtins
+'oc:dag:loadWorkflow'  (directory: string, workflowId: string) => WorkflowDefinition   // resolved via assertSubpath under <directory>/.opencode/workflows; builtin fallback
+'oc:dag:startRun'      (request: { workflow: WorkflowDefinition; directory: string; maxWorkerConcurrency?: number })
+                        => { runId: string }
+'oc:dag:stopRun'       (runId: string) => { success: boolean }
+'oc:dag:getRunStatus'  (runId: string) => DagRunState | null
+'oc:dag:listRuns'      () => DagRunSummary[]
 ```
 
 ### Listener channels (renderer -> main, `ipcMain.on`)
@@ -394,6 +401,8 @@ export type UpdateStatus =
 //   which no events arrive. The UI must distinguish the two or it shows a
 //   healthy dot on an app that has stopped responding to the agent.
 'main-menu:new-session'    ()   // File > New Session menu / Ctrl+N accelerator
+'oc:dag:event'             (event: DagEvent)
+                        // multi-agent DAG workflow lifecycle and node streaming events
 ```
 
 ### Preload bridge shape (`window.api`)
@@ -504,6 +513,15 @@ export interface OpencodeApi {
     }
     tools: { list(): Promise<ToolDefinition[]> }
     onEvent(cb: (e: { runId: string; event: RunnerEvent }) => void): () => void  // returns unsubscribe
+  }
+  dag: {
+    listWorkflows(directory: string): Promise<WorkflowSummary[]>
+    loadWorkflow(directory: string, workflowId: string): Promise<WorkflowDefinition>
+    startRun(request: { workflow: WorkflowDefinition; directory: string; maxWorkerConcurrency?: number }): Promise<{ runId: string }>
+    stopRun(runId: string): Promise<{ success: boolean }>
+    getRunStatus(runId: string): Promise<DagRunState | null>
+    listRuns(): Promise<DagRunSummary[]>
+    onEvent(cb: (event: DagEvent) => void): () => void
   }
   messages(directory: string, sessionID: string): Promise<MessageWithParts[]>
   revertMessage(a: { directory: string; sessionID: string; messageID: string }): Promise<void>
@@ -1699,10 +1717,46 @@ harness: {
 5. **NanoGPT goes through the existing rate limiter.** Harness NanoGPT requests share the
    app's rate limiting, so a runaway agent loop cannot hammer the API.
 
+### DAG types and enforced limits
+
+```ts
+type DagRunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
+type DagNodeState = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped'
+interface DagEvent {   // oc:dag:event, rebroadcast verbatim
+  type: 'dag_start' | 'dag_wave_start' | 'dag_node_start' | 'dag_node_event'
+      | 'dag_node_complete' | 'dag_wave_complete' | 'dag_complete' | 'dag_error'
+  dagRunId: string; timestamp: number
+  waveIndex?: number; nodeId?: string; event?: unknown
+  status?: DagRunStatus | DagNodeState; output?: DagNodeOutput; error?: string
+}
+interface WorkflowSummary { id: string; name: string; description?: string; nodeCount: number; filePath?: string }
+interface DagRunState {
+  dagRunId: string; workflowId: string; status: DagRunStatus
+  waves: DagWave[]; currentWaveIndex: number
+  nodeOutputs: Record<string, DagNodeOutput>   // { nodeId, status, content?, artifacts?, turns, usage, error? }
+  nodeStates: Record<string, DagNodeState>
+  startedAt: number; completedAt?: number; error?: string
+}
+```
+
+Limits enforced in code (`src/main/harness/dag/`):
+
+- `MAX_NODE_CONCURRENCY = 8` — `maxWorkerConcurrency` is clamped to 1..8.
+- `DEFAULT_MAX_RUN_TOKENS = 5_000_000` total tokens per run.
+- `DEFAULT_MAX_RUN_DURATION_MS = 30 min` — exceeding it ends the run `failed`.
+- `MAX_WORKFLOW_NODES = 128` per workflow.
+- Node `maxTurns` must be an integer 1..500 and is never raised above the profile cap.
+- A prompt `{{inputs.X}}` must reference a declared dependency of that node.
+- Workflow files larger than 1 MiB are rejected by the loader.
+- `MAX_RETAINED_RUNS = 20` — the controller keeps at most 20 finished runs in memory
+  (oldest evicted first, on run start and run finish); running runs are never evicted.
+- `getRunStatus`/`listRuns` truncate node output `content`, `error` and artifact `content`
+  strings to 64 KiB (`MAX_IPC_STRING_CHARS`) with a `[... truncated N characters]` marker.
+
 ### Deferred follow-ups — do not code against these
 
-The multi-agent DAG orchestrator and the additional provider adapters (`openai-compat`,
-`anthropic`, `opencode-bridge`) are deliberately deferred. The `opencode serve` flow
+The additional provider adapters (`openai-compat`,
+`anthropic`, `opencode-bridge`) are deliberately deferred. The multi-agent DAG orchestrator is active in `src/main/harness/dag/`. The `opencode serve` flow
 remains the primary chat path; the harness does not replace it.
 
 ## Leroy sidecar (gemini-live-agent)

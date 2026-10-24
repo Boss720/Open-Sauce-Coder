@@ -122,23 +122,22 @@ export function createEventSlice(set: SetState, get: GetState): EventSlice {
           if (part.sessionID !== state.activeSessionID) return
 
           // Capture the opening user message ID for transactional revert
-          const anyPart = part as any
           const lastPrompt = getLastPrompt()
-          if (anyPart.messageID && lastPrompt?.sessionID === part.sessionID && !lastPrompt.userMessageID) {
+          if (part.messageID && lastPrompt?.sessionID === part.sessionID && !lastPrompt.userMessageID) {
             // Only capture the FIRST message id (the user turn opener)
-            const msg = state.messages.find((m) => m.info.id === anyPart.messageID)
+            const msg = state.messages.find((m) => m.info.id === part.messageID)
             if (msg?.info.role === 'user') {
-              setLastPrompt({ ...lastPrompt, userMessageID: anyPart.messageID })
+              setLastPrompt({ ...lastPrompt, userMessageID: part.messageID })
               const activeAttempt = getActiveAttempt()
               if (activeAttempt && activeAttempt.userMessageID === null) {
-                activeAttempt.userMessageID = anyPart.messageID
+                activeAttempt.userMessageID = part.messageID
               }
             }
           }
 
           // Tool part lifecycle → pause/resume stall watchdog
           if (part.type === 'tool') {
-            const toolState = (part as any).state?.status
+            const toolState = part.state?.status
             if (toolState === 'pending' || toolState === 'running') {
               markToolStarted(part.sessionID)
             } else if (toolState === 'completed' || toolState === 'error') {

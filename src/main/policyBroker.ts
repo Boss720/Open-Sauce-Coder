@@ -7,7 +7,7 @@
  *
  * Shared across OpenCode sessions, direct harness, and subagents.
  */
-import { getPermissionConfig, type PermissionConfig, type PermissionLevel } from './configService'
+import { getPermissionConfig, type PermissionConfig } from './configService'
 import { getClient } from './server'
 import type { ToolDefinition } from './harness/tools/registry'
 import type { AgentProfile } from './harness/profiles'

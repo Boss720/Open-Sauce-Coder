@@ -36,7 +36,13 @@ import type {
   AgentProfile,
   RunStatus,
   HarnessToolDefinition,
-  HarnessEventPayload
+  HarnessEventPayload,
+  DagNodeState,
+  DagNodeOutput,
+  DagEvent,
+  DagRunSummary,
+  WorkflowDefinition,
+  WorkflowSummary
 } from '../types'
 
 export interface AppState {
@@ -80,7 +86,7 @@ export interface AppState {
   queuedPrompts: Array<{ text: string, parts?: PromptPart[] }>
   serverCommands: ServerCommand[]
   projects: ProjectRecord[]
-  activeView: 'chats' | 'projects' | 'images' | 'harness'
+  activeView: 'chats' | 'projects' | 'images' | 'harness' | 'dag'
   appSettings: AppSettings
   shortcutRegistered: boolean
   shortcutError: string | null
@@ -190,7 +196,7 @@ export interface AppState {
   loadProjects(): Promise<void>
   createProject(name: string): Promise<ProjectRecord>
   openProject(project: ProjectRecord): Promise<void>
-  setActiveView(view: 'chats' | 'projects' | 'images' | 'harness'): void
+  setActiveView(view: 'chats' | 'projects' | 'images' | 'harness' | 'dag'): void
   loadAppSettings(): Promise<void>
   updateAppSettings(patch: Partial<AppSettings>): Promise<void>
   setUpdateStatus(status: UpdateStatus): void
@@ -298,13 +304,34 @@ export interface AppState {
   killTerminal(id: TermId): Promise<void>
 
   // ui slice — panel additions
-  panelTab: 'files' | 'editor' | 'git' | 'terminal' | 'artifacts' | 'changes' | 'harness' | null
+  panelTab: 'files' | 'editor' | 'git' | 'terminal' | 'artifacts' | 'changes' | 'harness' | 'dag' | null
   setPanelTab(tab: AppState['panelTab']): void
   paletteOpen: boolean
   setPaletteOpen(open: boolean): void
   /** Transcript density: Normal / Verbose / Summary. Persisted in prefs. */
   viewMode: ViewMode
   setViewMode(mode: ViewMode): void
+
+  /* ---- Multi-Agent DAG Orchestration ---- */
+  dagWorkflows: WorkflowSummary[]
+  dagActiveWorkflowId: string | null
+  dagActiveWorkflow: WorkflowDefinition | null
+  dagActiveRunId: string | null
+  dagSelectedNodeId: string | null
+  dagRuns: DagRunSummary[]
+  dagNodeStates: Record<string, DagNodeState>
+  dagNodeOutputs: Record<string, DagNodeOutput>
+  dagNodeStreams: Record<string, { text: string; thinking: string }>
+  dagLoading: boolean
+  dagError: string | null
+
+  loadWorkflows(): Promise<void>
+  loadRuns(): Promise<void>
+  selectWorkflow(workflowId: string): Promise<void>
+  startWorkflow(workflow?: WorkflowDefinition): Promise<void>
+  cancelWorkflow(runId?: string): Promise<void>
+  selectNode(nodeId: string | null): void
+  handleDagEvent(event: DagEvent): void
 }
 
 /**

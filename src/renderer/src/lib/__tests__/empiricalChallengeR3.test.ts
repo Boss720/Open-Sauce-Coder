@@ -50,7 +50,7 @@ function fakeApi(overrides: Partial<OpencodeApi> = {}): OpencodeApi {
       remove: vi.fn(async () => {}),
       update: vi.fn(async (_dir, id, title) => makeSession(id, title)),
       todos: vi.fn(async () => [])
-    } as any,
+    } as unknown as OpencodeApi['sessions'],
     ...overrides
   } as unknown as OpencodeApi
 }
@@ -132,7 +132,7 @@ describe('R3 Adversarial Challenge: Policy Snapshot Immutability & Side-Effect G
         sessionReadOnly: { 'sess-1': false }
       })
 
-      const promptSpy = vi.fn(async () => {})
+      const promptSpy = vi.fn(async (_args: Parameters<OpencodeApi['prompt']>[0]) => {})
       const revertSpy = vi.fn(async () => {})
       mockApi.mockReturnValue(fakeApi({ prompt: promptSpy, revertMessage: revertSpy }))
 
@@ -166,7 +166,7 @@ describe('R3 Adversarial Challenge: Policy Snapshot Immutability & Side-Effect G
 
       expect(failoverDispatched).toBe(true)
       expect(promptSpy).toHaveBeenCalledTimes(1)
-      const promptCall = (promptSpy.mock.calls as any)[0]?.[0] as Record<string, any>
+      const promptCall = promptSpy.mock.calls[0]?.[0]
       expect(promptCall?.agent).toBe('reviewer')
       expect(promptCall?.tools).toEqual(READONLY_TOOLS)
       expect(promptCall?.agent).not.toBe('malicious-agent-override')
@@ -178,7 +178,7 @@ describe('R3 Adversarial Challenge: Policy Snapshot Immutability & Side-Effect G
         sessionReadOnly: { 'sess-1': false }
       })
 
-      const promptSpy = vi.fn(async () => {})
+      const promptSpy = vi.fn(async (_args: Parameters<OpencodeApi['prompt']>[0]) => {})
       mockApi.mockReturnValue(fakeApi({ prompt: promptSpy }))
 
       startActiveAttempt('sess-1', 'google', 'gemini-2.5-flash')
@@ -207,7 +207,7 @@ describe('R3 Adversarial Challenge: Policy Snapshot Immutability & Side-Effect G
 
       expect(failoverDispatched).toBe(true)
       expect(promptSpy).toHaveBeenCalledTimes(1)
-      const promptCall = (promptSpy.mock.calls as any)[0]?.[0] as Record<string, any>
+      const promptCall = promptSpy.mock.calls[0]?.[0]
       expect(promptCall?.agent).toBe('auditor')
       expect(promptCall?.tools).toEqual(READONLY_TOOLS)
     })
@@ -267,7 +267,7 @@ describe('R3 Adversarial Challenge: Policy Snapshot Immutability & Side-Effect G
     })
 
     it('successfully fails over and re-prompts next free model when NO side effects occurred and userMessageID is valid', async () => {
-      const { get } = createHarnessStore()
+      createHarnessStore()
 
       const promptSpy = vi.fn(async () => {})
       const revertSpy = vi.fn(async () => {})
@@ -369,7 +369,7 @@ describe('R3 Adversarial Challenge: Policy Snapshot Immutability & Side-Effect G
           remove: vi.fn(async () => {}),
           update: vi.fn(async (_dir, id, title) => makeSession(id, title)),
           todos: vi.fn(async () => [])
-        } as any,
+        } as unknown as OpencodeApi['sessions'],
         prompt: promptSpy
       }))
 

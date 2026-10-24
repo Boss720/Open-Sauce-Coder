@@ -18,6 +18,20 @@ export const MAX_INTERPOLATED_CHARS = 50_000
 const TEMPLATE_VAR_REGEX = /\{\{\s*inputs\.([a-zA-Z0-9_-]+)(?:\.([a-zA-Z0-9_.-]+))?\s*\}\}/g
 const FORBIDDEN_PROPERTIES = new Set(['__proto__', 'constructor', 'prototype'])
 
+/**
+ * Returns the distinct node ids referenced by {{inputs.<nodeId>...}} markers in
+ * a template, in first-seen order. Uses a fresh regex so the shared global
+ * pattern's lastIndex state is never disturbed.
+ */
+export function extractTemplateNodeRefs(template: string): string[] {
+  if (typeof template !== 'string') return []
+  const seen = new Set<string>()
+  for (const m of template.matchAll(new RegExp(TEMPLATE_VAR_REGEX.source, 'g'))) {
+    seen.add(m[1])
+  }
+  return Array.from(seen)
+}
+
 export interface InterpolateOptions {
   strict?: boolean
   maxVariableChars?: number

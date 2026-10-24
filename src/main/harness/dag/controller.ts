@@ -1,11 +1,12 @@
 /**
  * DAG Controller — main-process coordinator for multi-agent DAG runs.
  *
- * Manages active run tracking, workflow validation, assertSubpath project containment,
+ * Manages active run tracking, workflow validation, run-directory validation,
  * lifecycle commands (start, stop, status, list), and real-time event forwarding.
  */
 
-import { assertSubpath } from '../../projectsPaths'
+import { statSync } from 'node:fs'
+import { isAbsolute } from 'node:path'
 import { DagRunner, type DagRunnerOptions } from './runner'
 import type {
   DagEvent,
@@ -17,6 +18,42 @@ import { validateWorkflow } from './validator'
 
 export type DagEventCallback = (dagRunId: string, event: DagEvent) => void
 
+/** Maximum number of finished runs kept in memory; running runs are never evicted. */
+export const MAX_RETAINED_RUNS = 20
+/** Per-string cap (UTF-16 units) on node output content/errors that cross IPC. */
+export const MAX_IPC_STRING_CHARS = 64 * 1024
+
+export function truncateForIpc(value: string, max = MAX_IPC_STRING_CHARS): string {
+  if (value.length <= max) return value
+  return `${value.slice(0, max)}
+[... truncated ${value.length - max} characters]`
+}
+
+/**
+ * Returns a copy of a run state with every large string (node output content,
+ * errors, artifact content) bounded, so getRunStatus cannot ship unbounded payloads.
+ */
+export function boundRunState(state: DagRunState, max = MAX_IPC_STRING_CHARS): DagRunState {
+  const nodeOutputs: DagRunState['nodeOutputs'] = {}
+  for (const [id, out] of Object.entries(state.nodeOutputs ?? {})) {
+    nodeOutputs[id] = {
+      ...out,
+      content: typeof out.content === 'string' ? truncateForIpc(out.content, max) : out.content,
+      error: typeof out.error === 'string' ? truncateForIpc(out.error, max) : out.error,
+      artifacts: out.artifacts?.map((a) => ({ ...a, content: truncateForIpc(a.content, max) }))
+    }
+  }
+  return {
+    ...state,
+    nodeOutputs,
+    error: typeof state.error === 'string' ? truncateForIpc(state.error, max) : state.error
+  }
+}
+
+function isFinishedStatus(status: string): boolean {
+  return status === 'completed' || status === 'failed' || status === 'cancelled'
+}
+
 export class DagController {
   private readonly runs = new Map<string, { runner: DagRunner; state: DagRunState }>()
   private onEvent: DagEventCallback | null = null
@@ -24,6 +61,20 @@ export class DagController {
 
   constructor(options?: DagRunnerOptions) {
     this.options = options
+  }
+
+  /** Evicts the oldest finished runs beyond MAX_RETAINED_RUNS. Never evicts running ones. */
+  private pruneFinishedRuns(): void {
+    const finished: string[] = []
+    for (const [id, entry] of this.runs) {
+      // Map iteration is insertion order, i.e. oldest first.
+      if (isFinishedStatus(entry.state.status) || isFinishedStatus(entry.runner.getState().status)) {
+        finished.push(id)
+      }
+    }
+    for (const id of finished.slice(0, Math.max(0, finished.length - MAX_RETAINED_RUNS))) {
+      this.runs.delete(id)
+    }
   }
 
   /**
@@ -34,7 +85,7 @@ export class DagController {
   }
 
   /**
-   * Validates workflow, enforces directory containment, initializes DagRunner,
+   * Validates the workflow and the run directory, initializes DagRunner,
    * wires event callbacks, and starts execution asynchronously.
    */
   async startDagRun(params: {
@@ -50,8 +101,24 @@ export class DagController {
       throw new Error(`Invalid workflow definition: ${validation.errors.join('; ')}`)
     }
 
-    // Path containment check on directory
-    assertSubpath(directory, '.', { allowRoot: true })
+    // The run directory becomes the cwd for every node's agent and tools, so it
+    // must be an absolute path to a real directory. Note that assertSubpath is
+    // deliberately NOT used here: there is no outer base to contain against, and
+    // assertSubpath(directory, '.') would compare the directory with itself and
+    // always pass. Callers are responsible for having validated the directory
+    // (the IPC layer does so via requireDirectory).
+    if (!directory || typeof directory !== 'string' || !isAbsolute(directory)) {
+      throw new Error('DAG run directory must be an absolute path.')
+    }
+    let dirInfo: ReturnType<typeof statSync>
+    try {
+      dirInfo = statSync(directory)
+    } catch {
+      throw new Error(`DAG run directory does not exist: ${directory}`)
+    }
+    if (!dirInfo.isDirectory()) {
+      throw new Error(`DAG run directory is not a directory: ${directory}`)
+    }
 
     const runner = new DagRunner(validation.plan, directory, {
       ...this.options,
@@ -61,6 +128,7 @@ export class DagController {
     const dagRunId = runner.dagRunId
     const entry = { runner, state: runner.getState() }
     this.runs.set(dagRunId, entry)
+    this.pruneFinishedRuns()
 
     // Execute asynchronously (fire-and-forget), forwarding events through callback
     void runner
@@ -69,6 +137,12 @@ export class DagController {
         this.onEvent?.(dagRunId, event)
       })
       .catch((err: unknown) => {
+        // run() rejected, so nothing else will stop its in-flight nodes.
+        try {
+          runner.abort()
+        } catch {
+          // ignore
+        }
         entry.state = runner.getState()
         const errMsg = err instanceof Error ? err.message : String(err)
         this.onEvent?.(dagRunId, {
@@ -77,6 +151,10 @@ export class DagController {
           timestamp: Date.now(),
           error: errMsg
         })
+      })
+      .finally(() => {
+        entry.state = runner.getState()
+        this.pruneFinishedRuns()
       })
 
     return { dagRunId }
@@ -111,7 +189,7 @@ export class DagController {
     if (!run) {
       return null
     }
-    return run.runner.getState()
+    return boundRunState(run.runner.getState())
   }
 
   /**
@@ -126,7 +204,7 @@ export class DagController {
         status: s.status,
         startedAt: s.startedAt,
         completedAt: s.completedAt,
-        error: s.error
+        error: typeof s.error === 'string' ? truncateForIpc(s.error) : s.error
       }
     })
   }

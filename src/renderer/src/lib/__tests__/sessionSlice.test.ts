@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import type { OpencodeApi } from '../slices/api'
 import type { AppState, SetState, GetState } from '../slices/types'
 import type { RoutingMode } from '../prefs'
-import type { MessageWithParts, Provider, Session } from '../types'
+import type { MessageWithParts, Part, Provider, Session, Todo } from '../types'
 
 vi.mock('../slices/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../slices/api')>()
@@ -50,6 +50,12 @@ const mockClearActiveAttempt = vi.mocked(clearActiveAttempt)
 const mockGetActiveAttempt = vi.mocked(getActiveAttempt)
 const mockStartActiveAttempt = vi.mocked(startActiveAttempt)
 const mockSetLastPrompt = vi.mocked(setLastPrompt)
+
+type ApiOverrides = Omit<Partial<OpencodeApi>, 'sessions' | 'vcs' | 'commands'> & {
+  sessions?: Partial<OpencodeApi['sessions']>
+  vcs?: Partial<OpencodeApi['vcs']>
+  commands?: Partial<OpencodeApi['commands']>
+}
 
 /** Minimal harness mirroring zustand's set/get shape, without pulling in zustand itself. */
 function createStore(): { get: GetState; set: SetState } {
@@ -105,7 +111,7 @@ function setup(overrides: Partial<AppState> = {}): { get: GetState; set: SetStat
   return { get, set, slice }
 }
 
-function fakeApi(overrides: Partial<OpencodeApi> = {}): OpencodeApi {
+function fakeApi(overrides: ApiOverrides = {}): OpencodeApi {
   return {
     sessions: {
       list: vi.fn(async () => []),
@@ -146,8 +152,8 @@ function userMessage(id: string, sessionID: string, text: string): MessageWithPa
       time: { created: 1000 },
       agent: 'build',
       model: { providerID: 'google', modelID: 'gemini-3.6-flash' }
-    } as any,
-    parts: [{ id: `${id}-p1`, sessionID, messageID: id, type: 'text', text }] as any
+    } as unknown as MessageWithParts['info'],
+    parts: [{ id: `${id}-p1`, sessionID, messageID: id, type: 'text', text }] as unknown as MessageWithParts['parts']
   }
 }
 
@@ -169,7 +175,7 @@ function assistantMessage(id: string, sessionID: string, overrides: Record<strin
       cost: 0,
       tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
       ...overrides
-    } as any,
+    } as unknown as MessageWithParts['info'],
     parts: []
   }
 }
@@ -186,9 +192,9 @@ function agentProvider(id: string, modelID: string): Provider {
         id: modelID,
         name: modelID,
         capabilities: { toolcall: true, input: { text: true }, output: { text: true } }
-      } as any
+      } as unknown as Provider['models'][string]
     }
-  } as Provider
+  } as unknown as Provider
 }
 
 /**
@@ -198,9 +204,14 @@ function agentProvider(id: string, modelID: string): Provider {
  */
 function findNotice(get: GetState, substr: string): MessageWithParts | undefined {
   return get().messages.find((m) => {
-    const part = m.parts[0] as any
-    return part?.type === 'text' && typeof part.text === 'string' && part.text.includes(substr)
+    const part: unknown = m.parts[0]
+    return typeof part === 'object' && part !== null && 'type' in part && part.type === 'text' &&
+      'text' in part && typeof part.text === 'string' && part.text.includes(substr)
   })
+}
+
+function textContent(part: Part | undefined): string | undefined {
+  return part?.type === 'text' ? part.text : undefined
 }
 
 beforeEach(() => {
@@ -213,9 +224,9 @@ describe('setDirectory', () => {
     const listedSessions = [session('a', { time: { created: 1, updated: 5 } }), session('b', { time: { created: 1, updated: 10 } })]
     mockApi.mockReturnValue(
       fakeApi({
-        sessions: { list: vi.fn(async () => listedSessions) } as any,
-        vcs: { get: vi.fn(async () => ({ branch: 'main' })) } as any,
-        commands: { list: vi.fn(async () => [{ name: 'foo', description: 'd' }]) } as any
+        sessions: { list: vi.fn(async () => listedSessions) } as unknown as Partial<OpencodeApi['sessions']>,
+        vcs: { get: vi.fn(async () => ({ branch: 'main' })) } as unknown as Partial<OpencodeApi['vcs']>,
+        commands: { list: vi.fn(async () => [{ name: 'foo', description: 'd' }]) } as unknown as Partial<OpencodeApi['commands']>
       })
     )
     const { get, slice } = setup({
@@ -243,7 +254,7 @@ describe('setDirectory', () => {
     const listPromise = new Promise<Session[]>((res) => {
       resolveList = res
     })
-    mockApi.mockReturnValue(fakeApi({ sessions: { list: vi.fn(() => listPromise) } as any }))
+    mockApi.mockReturnValue(fakeApi({ sessions: { list: vi.fn(() => listPromise) } as unknown as Partial<OpencodeApi['sessions']> }))
     const { get, set, slice } = setup()
 
     const p = slice.setDirectory('/proj-a')
@@ -261,7 +272,7 @@ describe('setDirectory', () => {
           list: vi.fn(async () => {
             throw new Error('disk unplugged')
           })
-        } as any
+        } as unknown as Partial<OpencodeApi['sessions']>
       })
     )
     const { get, slice } = setup()
@@ -278,7 +289,7 @@ describe('setDirectory', () => {
           get: vi.fn(async () => {
             throw new Error('not a repo')
           })
-        } as any
+        } as unknown as Partial<OpencodeApi['vcs']>
       })
     )
     const { get, slice } = setup()
@@ -296,7 +307,7 @@ describe('setDirectory', () => {
           list: vi.fn(async () => {
             throw new Error('boom')
           })
-        } as any
+        } as unknown as Partial<OpencodeApi['commands']>
       })
     )
     const { get, slice } = setup()
@@ -316,7 +327,7 @@ describe('newSession', () => {
   })
 
   it('creates a session and makes it active', async () => {
-    mockApi.mockReturnValue(fakeApi({ sessions: { create: vi.fn(async () => session('s1')) } as any }))
+    mockApi.mockReturnValue(fakeApi({ sessions: { create: vi.fn(async () => session('s1')) } as unknown as Partial<OpencodeApi['sessions']> }))
     const { get, slice } = setup({ directory: '/proj' })
 
     await slice.newSession()
@@ -334,7 +345,7 @@ describe('newSession', () => {
           create: vi.fn(async () => {
             throw new Error('quota exceeded')
           })
-        } as any
+        } as unknown as Partial<OpencodeApi['sessions']>
       })
     )
     const { get, slice } = setup({ directory: '/proj' })
@@ -413,10 +424,10 @@ describe('selectSession', () => {
           todos: vi.fn(async () => {
             throw new Error('no todos endpoint')
           })
-        } as any
+        } as unknown as Partial<OpencodeApi['sessions']>
       })
     )
-    const { get, slice } = setup({ directory: '/proj', todos: [{ id: 'old' } as any] })
+    const { get, slice } = setup({ directory: '/proj', todos: [{ id: 'old' } as unknown as Todo] })
 
     await slice.selectSession('s1')
 
@@ -477,7 +488,7 @@ describe('deleteSession', () => {
           remove: vi.fn(async () => {
             throw new Error('locked')
           })
-        } as any
+        } as unknown as Partial<OpencodeApi['sessions']>
       })
     )
     const { get, slice } = setup({ directory: '/proj', sessions: [session('s1')] })
@@ -490,7 +501,7 @@ describe('deleteSession', () => {
 
 describe('renameSession', () => {
   it('upserts the renamed session on success', async () => {
-    mockApi.mockReturnValue(fakeApi({ sessions: { update: vi.fn(async () => session('s1', { title: 'New title' })) } as any }))
+    mockApi.mockReturnValue(fakeApi({ sessions: { update: vi.fn(async () => session('s1', { title: 'New title' })) } as unknown as Partial<OpencodeApi['sessions']> }))
     const { get, slice } = setup({ directory: '/proj', sessions: [session('s1', { title: 'Old' })] })
 
     await slice.renameSession('s1', 'New title')
@@ -505,7 +516,7 @@ describe('renameSession', () => {
           update: vi.fn(async () => {
             throw new Error('name taken')
           })
-        } as any
+        } as unknown as Partial<OpencodeApi['sessions']>
       })
     )
     const { get, slice } = setup({ directory: '/proj', sessions: [session('s1')] })
@@ -743,7 +754,7 @@ describe('executeSlashCommand', () => {
   })
 
   it('creates a session on the fly when none is active yet', async () => {
-    mockApi.mockReturnValue(fakeApi({ sessions: { create: vi.fn(async () => session('fresh')) } as any }))
+    mockApi.mockReturnValue(fakeApi({ sessions: { create: vi.fn(async () => session('fresh')) } as unknown as Partial<OpencodeApi['sessions']> }))
     const { get, slice } = setup({ directory: '/proj', activeSessionID: null })
 
     await slice.executeSlashCommand('/help')
@@ -773,7 +784,7 @@ describe('executeSlashCommand', () => {
     await slice.executeSlashCommand('/clear')
 
     expect(get().messages).toHaveLength(1)
-    expect((get().messages[0].parts[0] as any).text).toContain('Cleared local view')
+    expect(textContent(get().messages[0]?.parts[0])).toContain('Cleared local view')
   })
 
   it('/models summarizes providers and the active model', async () => {
@@ -816,7 +827,7 @@ describe('executeSlashCommand', () => {
 
     const notice = findNotice(get, 'System Diagnostics')
     expect(notice).toBeDefined()
-    expect((notice?.parts[0] as any).text).toContain('Running')
+    expect(textContent(notice?.parts[0])).toContain('Running')
   })
 
   it('reports unknown commands instead of silently dropping them', async () => {
@@ -873,7 +884,7 @@ describe('send', () => {
 
   it('creates a session on the fly when none is active, then prompts', async () => {
     const promptFn = vi.fn(async () => {})
-    mockApi.mockReturnValue(fakeApi({ sessions: { create: vi.fn(async () => session('fresh')) } as any, prompt: promptFn }))
+    mockApi.mockReturnValue(fakeApi({ sessions: { create: vi.fn(async () => session('fresh')) } as unknown as Partial<OpencodeApi['sessions']>, prompt: promptFn }))
     const { get, slice } = setup({
       directory: '/proj',
       activeSessionID: null,
@@ -974,7 +985,7 @@ describe('send', () => {
   })
 
   it('error path: side effects already committed (R1) blocks failover even for a retryable error', async () => {
-    mockGetActiveAttempt.mockReturnValueOnce({ toolExecuted: true, hasStreamed: false } as any)
+    mockGetActiveAttempt.mockReturnValueOnce({ toolExecuted: true, hasStreamed: false } as unknown as NonNullable<ReturnType<typeof getActiveAttempt>>)
     mockApi.mockReturnValue(
       fakeApi({
         prompt: vi.fn(async () => {
@@ -1069,7 +1080,7 @@ describe('send', () => {
 
     expect(get().providerID).toBe('google')
     expect(get().modelID).toBe('gemini-3.6-flash')
-    const notices = get().messages.filter((m) => (m.parts[0] as any)?.text?.includes('Auto-mode'))
+    const notices = get().messages.filter((m) => textContent(m.parts[0])?.includes('Auto-mode'))
     expect(notices).toHaveLength(1)
     expect(promptFn).toHaveBeenCalledWith(
       expect.objectContaining({ providerID: 'google', modelID: 'gemini-3.6-flash' })

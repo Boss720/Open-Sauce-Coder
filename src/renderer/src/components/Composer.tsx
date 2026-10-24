@@ -89,8 +89,8 @@ export function Composer(): ReactNode {
     const available = new Set<string>()
     for (const p of providers) {
       if (!linkedProviderIDs.includes(p.id)) continue
-      for (const m of Object.values(p.models ?? {}) as Array<{ id: string }>) {
-        if (isAgentModel(m as any) && (showPaidModels || isFreeModel(p.id, m.id))) {
+      for (const m of Object.values(p.models ?? {})) {
+        if (isAgentModel(m) && (showPaidModels || isFreeModel(p.id, m.id))) {
           available.add(`${p.id}/${m.id}`)
         }
       }

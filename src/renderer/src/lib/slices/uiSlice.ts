@@ -41,7 +41,7 @@ export function createUiSlice(set: SetState, get: GetState): UiSlice {
     paletteOpen: false,
     viewMode: 'normal' as ViewMode,
 
-    setActiveView(view: 'chats' | 'projects' | 'images' | 'harness'): void {
+    setActiveView(view: AppState['activeView']): void {
       set({ activeView: view })
     },
 

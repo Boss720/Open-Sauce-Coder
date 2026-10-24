@@ -2,9 +2,10 @@
  * Electron app lifecycle: window creation, OpenCode server supervision, event fan-out.
  */
 import { app, BrowserWindow, desktopCapturer, dialog, session } from 'electron'
-import { existsSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, renameSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
 import { attachContextMenu } from './contextMenu'
 import { initCrashLog, logCrash } from './crashlog'
 import { isTrustedRendererUrl } from './trustedUrl'
@@ -20,12 +21,40 @@ import { checkForUpdates, cleanupUpdater, setupUpdater, type UpdateStatus } from
 import { getStatus, onEvent, onStatus, startServer, stopServer, type ServerStatus } from './server'
 import { stopAllLeroy } from './leroy/sidecar'
 import { getHarnessController } from './harness/controller'
+import { getDagController } from './harness/dag'
+import { sanitizeLogLine } from './logRedact'
+
+/** Cap on lifecycle.log; past this it is rotated to lifecycle.log.1 (one generation). */
+const LIFECYCLE_LOG_MAX_BYTES = 1024 * 1024
+
+function logLifecycle(msg: string): void {
+  try {
+    const dir = join(app.getPath('appData'), 'opencode-desktop')
+    mkdirSync(dir, { recursive: true })
+    const file = join(dir, 'lifecycle.log')
+    try {
+      if (statSync(file).size > LIFECYCLE_LOG_MAX_BYTES) renameSync(file, `${file}.1`)
+    } catch {
+      /* no log yet */
+    }
+    appendFileSync(
+      file,
+      `[${new Date().toISOString()}] [PID ${process.pid}] ${sanitizeLogLine(msg)}\n`
+    )
+  } catch {
+    /* best-effort */
+  }
+}
 
 const moduleDir = dirname(fileURLToPath(import.meta.url))
 const rendererDevUrl = process.env.ELECTRON_RENDERER_URL
+const isDevelopmentRun = !app.isPackaged && Boolean(rendererDevUrl)
 
 app.setName('opencode-desktop')
-app.setPath('userData', join(app.getPath('appData'), 'opencode-desktop'))
+// Keep Chromium's profile lock and development settings separate from the installed app.
+// Otherwise launching `npm run dev` while the tray app is open makes Electron exit before
+// it can create a window.
+app.setPath('userData', join(app.getPath('appData'), isDevelopmentRun ? 'opencode-desktop-dev' : 'opencode-desktop'))
 
 let mainWindow: BrowserWindow | null = null
 let shuttingDown = false
@@ -86,7 +115,10 @@ function resolveResource(name: string): string {
 /* renderer messaging                                                  */
 /* ------------------------------------------------------------------ */
 
-function broadcast(channel: 'oc:event' | 'oc:server' | 'oc:harness:event', payload: unknown): void {
+function broadcast(
+  channel: 'oc:event' | 'oc:server' | 'oc:harness:event' | 'oc:dag:event',
+  payload: unknown
+): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue
     const contents = win.webContents
@@ -139,13 +171,32 @@ function createWindow(): BrowserWindow {
     }
   })
 
+  logLifecycle(`createWindow starting width=${saved.width} height=${saved.height}`)
   attachContextMenu(win.webContents)
 
   // Restore maximized state after showing
+  // Fallback: if ready-to-show never fires, show anyway so the window cannot stay invisible.
+  const showFallback = setTimeout(() => {
+    if (!win.isDestroyed() && !win.isVisible()) {
+      logLifecycle('win ready-to-show fallback timer: showing window')
+      win.show()
+    }
+  }, 10_000)
+  showFallback.unref()
+  win.once('closed', () => clearTimeout(showFallback))
+
   win.on('ready-to-show', () => {
+    clearTimeout(showFallback)
+    logLifecycle('win.ready-to-show fired')
     rendererReady.add(win)
     if (saved.maximized) win.maximize()
     win.show()
+    try {
+      const hwnd = win.getNativeWindowHandle().readInt32LE(0)
+      logLifecycle(`win ready-to-show complete: HWND=${hwnd} isVisible=${win.isVisible()} bounds=${JSON.stringify(win.getBounds())}`)
+    } catch (e) {
+      logLifecycle(`win error getting HWND: ${e}`)
+    }
     if (!win.webContents.isDestroyed()) {
       win.webContents.send('oc:server', getStatus())
       win.webContents.send('update:status', lastUpdateStatus)
@@ -154,10 +205,19 @@ function createWindow(): BrowserWindow {
     tray?.refresh()
   })
 
+  win.webContents.on('did-finish-load', () => {
+    logLifecycle('win.webContents did-finish-load')
+  })
+
+  win.webContents.on('render-process-gone', (_event, details) => {
+    logLifecycle(`win.webContents render-process-gone: ${JSON.stringify(details)}`)
+  })
+
   // Debounced resize/move persistence plus an immediate save on close.
   mainBounds.attach(win)
 
   win.on('close', (event) => {
+    logLifecycle(`win.close fired, quitRequested=${quitRequested}, closeToTray=${appSettings?.get().settings.closeToTray}`)
     if (!quitRequested && appSettings?.get().settings.closeToTray) {
       event.preventDefault()
       win.hide()
@@ -166,6 +226,7 @@ function createWindow(): BrowserWindow {
   })
 
   win.on('closed', () => {
+    logLifecycle('win.closed fired')
     if (mainWindow === win) mainWindow = null
     tray?.refresh()
   })
@@ -187,11 +248,19 @@ function createWindow(): BrowserWindow {
   win.webContents.on('will-attach-webview', (event) => event.preventDefault())
 
   win.webContents.on('console-message', (event) => {
-    console.log(`[Renderer Console] [level ${event.level}] ${event.message} (${event.sourceId}:${event.lineNumber})`)
+    // Warnings and errors only (0 verbose, 1 info, 2 warning, 3 error): routine
+    // renderer logging does not belong in a persistent on-disk log.
+    const level = typeof event.level === 'number' ? event.level : Number(event.level)
+    const isWarnOrError = event.level === 'warning' || event.level === 'error' || level >= 2
+    // Dev only: echo every level to stdout (never to disk) so tooling can watch
+    // for renderer readiness, e.g. "[vite] connected.".
+    if (rendererDevUrl) console.log(`[Renderer Console] ${sanitizeLogLine(event.message)}`)
+    if (!isWarnOrError) return
+    logLifecycle(`[Renderer Console] [level ${event.level}] ${event.message} (${event.sourceId}:${event.lineNumber})`)
   })
 
   win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
-    console.error(`[Renderer fail load] code=${errorCode} desc=${errorDescription} url=${validatedURL}`)
+    logLifecycle(`[Renderer fail load] code=${errorCode} desc=${errorDescription} url=${validatedURL}`)
   })
 
   if (rendererDevUrl) {
@@ -202,15 +271,6 @@ function createWindow(): BrowserWindow {
 
   mainWindow = win
   return win
-}
-
-function focusExistingWindow(): void {
-  const existing = mainWindow
-  if (!existing || existing.isDestroyed()) return
-  if (existing.isMinimized()) existing.restore()
-  existing.show()
-  existing.focus()
-  tray?.refresh()
 }
 
 function showMainWindow(): BrowserWindow {
@@ -237,6 +297,7 @@ function sendMainWindowCommand(channel: 'main-menu:new-session'): void {
 }
 
 function requestQuit(): void {
+  logLifecycle('requestQuit called')
   quitRequested = true
   app.quit()
 }
@@ -248,11 +309,15 @@ function requestQuit(): void {
 // Production keeps exactly one instance. Development may opt out so a local build can
 // be tested while the installed tray app is still running.
 const allowDevelopmentInstance = !app.isPackaged && process.env.OPENCODE_DESKTOP_ALLOW_MULTIPLE === '1'
-if (!allowDevelopmentInstance && !app.requestSingleInstanceLock()) {
+const singleInstance = app.requestSingleInstanceLock()
+logLifecycle(`lock check: allowDev=${allowDevelopmentInstance} lockAcquired=${singleInstance}`)
+if (!allowDevelopmentInstance && !singleInstance) {
+  logLifecycle('singleInstanceLock failed -> app.quit()')
   app.quit()
 } else {
   app.on('second-instance', () => {
-    focusExistingWindow()
+    logLifecycle('second-instance event received -> showMainWindow')
+    showMainWindow()
   })
 
   onEvent((event) => {
@@ -263,11 +328,16 @@ if (!allowDevelopmentInstance && !app.requestSingleInstanceLock()) {
     broadcast('oc:harness:event', { runId, event })
   })
 
+  getDagController().setEventCallback((_dagRunId, event) => {
+    broadcast('oc:dag:event', event)
+  })
+
   onStatus((serverStatus: ServerStatus) => {
     broadcast('oc:server', serverStatus)
   })
 
   process.on('uncaughtException', (err) => {
+    logLifecycle(`uncaughtException: ${err instanceof Error ? err.stack ?? err.message : String(err)}`)
     logCrash('uncaughtException', err)
     try {
       dialog.showErrorBox(
@@ -280,10 +350,12 @@ if (!allowDevelopmentInstance && !app.requestSingleInstanceLock()) {
     app.exit(1)
   })
   process.on('unhandledRejection', (reason) => {
+    logLifecycle(`unhandledRejection: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}`)
     logCrash('unhandledRejection', reason)
   })
 
   app.whenReady().then(() => {
+    logLifecycle('app.whenReady resolved')
     initCrashLog(app)
     app.setAppUserModelId(rendererDevUrl ? 'dev.opencode.desktop.dev' : 'dev.opencode.desktop')
 
@@ -338,10 +410,26 @@ if (!allowDevelopmentInstance && !app.requestSingleInstanceLock()) {
     })
     createWindow()
 
-    void startServer().then((serverStatus) => {
-      broadcast('oc:server', serverStatus)
-    })
-    if (app.isPackaged) void checkForUpdates()
+    logLifecycle('createWindow returned, calling startServer')
+    void startServer()
+      .then((serverStatus) => {
+        logLifecycle(`startServer resolved: running=${serverStatus.running} url=${serverStatus.url} error=${serverStatus.error}`)
+        broadcast('oc:server', serverStatus)
+      })
+      .catch((err) => {
+        logLifecycle(`startServer rejected: ${err}`)
+      })
+
+    if (app.isPackaged) {
+      logLifecycle('calling checkForUpdates()')
+      void checkForUpdates()
+        .then(() => {
+          logLifecycle('checkForUpdates resolved')
+        })
+        .catch((err) => {
+          logLifecycle(`checkForUpdates rejected: ${err}`)
+        })
+    }
 
     app.on('activate', () => {
       // Keyed on the MAIN window, not the window count: with the Live copilot
@@ -352,12 +440,14 @@ if (!allowDevelopmentInstance && !app.requestSingleInstanceLock()) {
   })
 
   app.on('window-all-closed', () => {
+    logLifecycle(`app window-all-closed, closeToTray=${appSettings?.get().settings.closeToTray}, quitRequested=${quitRequested}`)
     if (process.platform === 'darwin') return
     if (!quitRequested && appSettings?.get().settings.closeToTray) return
     app.quit()
   })
 
   app.on('before-quit', () => {
+    logLifecycle(`app before-quit, shuttingDown=${shuttingDown}, quitRequested=${quitRequested}`)
     if (shuttingDown) return
     shuttingDown = true
     quitRequested = true
@@ -377,11 +467,20 @@ if (!allowDevelopmentInstance && !app.requestSingleInstanceLock()) {
   })
 
   app.on('will-quit', () => {
+    logLifecycle(`app will-quit, shuttingDown=${shuttingDown}`)
     if (shuttingDown) return
     shuttingDown = true
     stopAllGeminiLive()
     stopAllLeroy()
     stopServer()
     unregisterIpc()
+  })
+
+  app.on('quit', (_event, exitCode) => {
+    logLifecycle(`app.on(quit) exitCode=${exitCode}`)
+  })
+
+  process.on('exit', (code) => {
+    logLifecycle(`process.on(exit) code=${code}`)
   })
 }

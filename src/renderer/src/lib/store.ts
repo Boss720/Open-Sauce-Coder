@@ -36,6 +36,7 @@ import { createEventSlice } from './slices/eventSlice'
 import { createFileTreeSlice } from './slices/fileTreeSlice'
 import { createGitSlice } from './slices/gitSlice'
 import { createHarnessSlice } from './slices/harnessSlice'
+import { createDagSlice } from './slices/dagSlice'
 import { createProjectsSlice } from './slices/projectsSlice'
 import { createRoutingSlice } from './slices/routingSlice'
 import { createSessionSlice } from './slices/sessionSlice'
@@ -69,6 +70,7 @@ export const useStore = create<AppState>()((set, get) => {
     ...createEventSlice(setState, getState),
     ...createNanoQuotaSlice(setState, getState),
     ...createHarnessSlice(setState, getState),
+    ...createDagSlice(setState, getState),
 
     async init(): Promise<void> {
       subscribe()
@@ -178,6 +180,9 @@ function subscribe(): void {
     })
     bridge.harness.onEvent((payload) => {
       useStore.getState().handleHarnessEvent(payload)
+    })
+    bridge.dag?.onEvent?.((event) => {
+      useStore.getState().handleDagEvent(event)
     })
     bridge.onServer((status) => {
       const prev = useStore.getState().server

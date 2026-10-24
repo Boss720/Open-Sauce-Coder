@@ -1,0 +1,46 @@
+{
+  "id": "feature-implementation",
+  "name": "Architecture Planner -> Implementer -> Verifier",
+  "description": "End-to-end feature delivery pipeline: architectural planning, code implementation, and validation.",
+  "version": "1.0.0",
+  "nodes": [
+    {
+      "id": "architect",
+      "name": "Architecture Planner",
+      "profileId": "orchestrator",
+      "prompt": "You are the Architecture Planner agent.\nYour objective is to produce a comprehensive, structured technical implementation blueprint for the requested feature.\n\nInstructions:\n1. Explore the workspace using fs_read, fs_list, and grep to understand the existing project architecture, coding standards, directory conventions, and dependencies.\n2. Formulate a technical blueprint with the following sections:\n   - Architectural Overview & System Context\n   - Component/Module Breakdown (exact files to create or modify)\n   - Interface & Data Contracts (types, schemas, IPC channels, or API methods)\n   - Step-by-Step Implementation Strategy\n   - Verification & Acceptance Criteria (commands to execute, edge cases to validate)\n3. Provide the full blueprint for the Implementer and Verifier agents.",
+      "dependencies": [],
+      "policy": {
+        "abortOnFail": true
+      },
+      "maxTurns": 25
+    },
+    {
+      "id": "implementer",
+      "name": "Implementer",
+      "profileId": "coder",
+      "prompt": "You are the Implementer agent.\nYour objective is to implement the feature in accordance with the architectural blueprint.\n\nArchitectural Blueprint:\n{{inputs.architect.output}}\n\nInstructions:\n1. Review the architectural blueprint above carefully.\n2. Implement all required modules, functions, and interfaces using fs_write, fs_patch, and shell.\n3. Adhere to repository conventions (TypeScript strictness, error handling, formatting).\n4. Write or update unit tests covering the new functionality.\n5. Run local builds or test runs via shell tool to verify that the implementation compiles and runs.\n6. Provide a concise summary of all files created/modified and any implementation notes for the Verifier.",
+      "dependencies": [
+        "architect"
+      ],
+      "policy": {
+        "abortOnFail": true
+      },
+      "maxTurns": 40
+    },
+    {
+      "id": "verifier",
+      "name": "Verifier",
+      "profileId": "coder",
+      "prompt": "You are the Verifier agent.\nYour objective is to validate that the implemented feature satisfies all architectural specifications and passes all verification gates.\n\nArchitectural Blueprint:\n{{inputs.architect.output}}\n\nImplementer Summary:\n{{inputs.implementer.output}}\n\nInstructions:\n1. Cross-reference the implemented files against the blueprint requirements.\n2. Run the repository type check command using the shell tool (e.g. npm run typecheck).\n3. Run the linter using the shell tool (e.g. npm run lint).\n4. Run the full test suite using the shell tool (e.g. npm test or vitest).\n5. Verify edge cases, error conditions, and contract alignment.\n6. Produce a final verification report:\n   - Status of typecheck, lint, and test suites\n   - Architectural compliance checklist\n   - Final sign-off: PASS or DEFECTS FOUND (with remediation guidance)",
+      "dependencies": [
+        "architect",
+        "implementer"
+      ],
+      "policy": {
+        "abortOnFail": true
+      },
+      "maxTurns": 20
+    }
+  ]
+}

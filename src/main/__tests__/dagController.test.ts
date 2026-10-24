@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
-import { DagController, getDagController } from '../harness/dag/controller'
-import type { DagEvent, DagNodeDefinition, WorkflowDefinition } from '../harness/dag/types'
+import {
+  DagController,
+  MAX_IPC_STRING_CHARS,
+  MAX_RETAINED_RUNS,
+  boundRunState,
+  getDagController,
+  truncateForIpc
+} from '../harness/dag/controller'
+import { DagRunner } from '../harness/dag/runner'
+import type { DagEvent, DagNodeDefinition, DagRunState, WorkflowDefinition } from '../harness/dag/types'
 import type { AgentRunner, RunnerResult } from '../harness/runner'
 import { tmpdir } from 'node:os'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -187,13 +195,22 @@ describe('DagController', () => {
     }
   })
 
-  it('rejects directory path escaping via assertSubpath', async () => {
+  it('rejects a run directory that is not an absolute path to a real directory', async () => {
     const controller = new DagController()
     const workflow = makeValidWorkflow()
 
+    // Blank, relative and non-existent directories are all refused. The old
+    // check here was assertSubpath(directory, '.'), which compared the
+    // directory with itself and therefore always passed.
+    await expect(controller.startDagRun({ workflow, directory: '   ' })).rejects.toThrow(
+      /absolute path/i
+    )
     await expect(
-      controller.startDagRun({ workflow, directory: '   ' })
-    ).rejects.toThrow(/non-empty/i)
+      controller.startDagRun({ workflow, directory: 'relative/not/absolute' })
+    ).rejects.toThrow(/absolute path/i)
+    await expect(
+      controller.startDagRun({ workflow, directory: join(tmpdir(), 'dag-does-not-exist-xyz') })
+    ).rejects.toThrow(/does not exist/i)
   })
 
   it('forwards DAG execution events to registered event callback', async () => {
@@ -234,5 +251,98 @@ describe('DagController', () => {
     const c2 = getDagController()
     expect(c1).toBe(c2)
     expect(c1).toBeInstanceOf(DagController)
+  })
+
+  it('aborts the runner when run() rejects so in-flight nodes are not orphaned', async () => {
+    const testDir = mkdtempSync(join(tmpdir(), 'dag-test-'))
+    const runSpy = vi.spyOn(DagRunner.prototype, 'run').mockRejectedValue(new Error('runner exploded'))
+    const abortSpy = vi.spyOn(DagRunner.prototype, 'abort')
+    try {
+      const events: DagEvent[] = []
+      const controller = new DagController({ runnerFactory: mockRunnerFactory(0) })
+      controller.setEventCallback((_id: string, e: DagEvent) => events.push(e))
+      await controller.startDagRun({ workflow: makeValidWorkflow(), directory: testDir })
+      await new Promise((r) => setTimeout(r, 20))
+
+      expect(abortSpy).toHaveBeenCalledTimes(1)
+      const err = events.find((e) => e.type === 'dag_error')
+      expect(err?.error).toMatch(/runner exploded/)
+    } finally {
+      runSpy.mockRestore()
+      abortSpy.mockRestore()
+      rmSync(testDir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('DagController retention and bounds', () => {
+  it('prunes oldest finished runs beyond MAX_RETAINED_RUNS', async () => {
+    const testDir = mkdtempSync(join(tmpdir(), 'dag-test-'))
+    try {
+      const controller = new DagController({ runnerFactory: mockRunnerFactory(0) })
+      const ids: string[] = []
+      for (let i = 0; i < MAX_RETAINED_RUNS + 5; i++) {
+        const { dagRunId } = await controller.startDagRun({
+          workflow: makeValidWorkflow(),
+          directory: testDir
+        })
+        ids.push(dagRunId)
+        await new Promise((r) => setTimeout(r, 15))
+      }
+      await new Promise((r) => setTimeout(r, 30))
+      expect(controller.listDagRuns().length).toBeLessThanOrEqual(MAX_RETAINED_RUNS)
+      expect(controller.getDagRunStatus(ids[0])).toBeNull()
+      expect(controller.getDagRunStatus(ids[ids.length - 1])).not.toBeNull()
+    } finally {
+      rmSync(testDir, { recursive: true, force: true })
+    }
+  })
+
+  it('never evicts running runs', async () => {
+    const testDir = mkdtempSync(join(tmpdir(), 'dag-test-'))
+    try {
+      const controller = new DagController({ runnerFactory: mockRunnerFactory(400) })
+      const first = await controller.startDagRun({ workflow: makeValidWorkflow(), directory: testDir })
+      for (let i = 0; i < MAX_RETAINED_RUNS + 3; i++) {
+        await controller.startDagRun({ workflow: makeValidWorkflow(), directory: testDir })
+      }
+      expect(controller.getDagRunStatus(first.dagRunId)).not.toBeNull()
+      expect(controller.listDagRuns().length).toBe(MAX_RETAINED_RUNS + 4)
+      await controller.stopDagRun(first.dagRunId)
+    } finally {
+      await new Promise((r) => setTimeout(r, 900))
+      rmSync(testDir, { recursive: true, force: true })
+    }
+  })
+
+  it('boundRunState truncates large output strings without mutating the input', () => {
+    const big = 'x'.repeat(MAX_IPC_STRING_CHARS + 100)
+    const state: DagRunState = {
+      dagRunId: 'r',
+      workflowId: 'w',
+      status: 'completed',
+      waves: [],
+      currentWaveIndex: 0,
+      nodeStates: { a: 'succeeded' },
+      startedAt: 1,
+      nodeOutputs: {
+        a: {
+          nodeId: 'a',
+          status: 'succeeded',
+          content: big,
+          error: big,
+          artifacts: [{ name: 'f', content: big }],
+          turns: 1,
+          usage: { input: 1, output: 1 }
+        }
+      }
+    }
+    const out = boundRunState(state)
+    expect(out.nodeOutputs.a.content!.length).toBeLessThan(big.length)
+    expect(out.nodeOutputs.a.content).toMatch(/truncated 100 characters\]$/)
+    expect(out.nodeOutputs.a.artifacts![0].content).toMatch(/truncated/)
+    expect(out.nodeOutputs.a.error).toMatch(/truncated/)
+    expect(state.nodeOutputs.a.content).toBe(big)
+    expect(truncateForIpc('short')).toBe('short')
   })
 })

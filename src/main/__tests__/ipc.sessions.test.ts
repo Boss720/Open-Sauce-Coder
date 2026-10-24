@@ -16,7 +16,7 @@ describe('ipc sessions, messages, and agent channels', () => {
     it('calls getClient().session.list with the directory', async () => {
       const mockSessions = [{ id: 'sess-1', title: 'Chat 1' }]
       h.mocks.getClient.mockReturnValue({
-        session: { list: (args: unknown) => ({ data: mockSessions, error: null, response: { ok: true, status: 200, statusText: 'OK' } }) }
+        session: { list: (_args: unknown) => ({ data: mockSessions, error: null, response: { ok: true, status: 200, statusText: 'OK' } }) }
       })
 
       const result = await h.invoke('oc:sessions:list', '/project')
@@ -51,7 +51,7 @@ describe('ipc sessions, messages, and agent channels', () => {
 
     it('creates a session with title', async () => {
       const mockSession = { id: 'sess-1', title: 'My Title' }
-      const createFn = (args: any) => ({ data: mockSession, error: null, response: { ok: true, status: 200, statusText: 'OK' } })
+      const createFn = () => ({ data: mockSession, error: null, response: { ok: true, status: 200, statusText: 'OK' } })
       h.mocks.getClient.mockReturnValue({ session: { create: createFn } })
 
       const result = await h.invoke('oc:sessions:create', '/project', 'My Title', undefined)
@@ -61,7 +61,7 @@ describe('ipc sessions, messages, and agent channels', () => {
 
     it('creates a child session with parentID', async () => {
       const mockSession = { id: 'sess-2', title: null, parentID: 'sess-1' }
-      const createFn = (args: any) => ({ data: mockSession, error: null, response: { ok: true, status: 200, statusText: 'OK' } })
+      const createFn = () => ({ data: mockSession, error: null, response: { ok: true, status: 200, statusText: 'OK' } })
       h.mocks.getClient.mockReturnValue({ session: { create: createFn } })
 
       const result = await h.invoke('oc:sessions:create', '/project', undefined, 'sess-1')
@@ -302,7 +302,7 @@ describe('ipc sessions, messages, and agent channels', () => {
 
     it('treats undefined arguments as empty string', async () => {
       h.mocks.getClient.mockReturnValue({
-        session: { command: (args: any) => {
+        session: { command: (args: { body: { arguments: string } }) => {
           expect(args.body.arguments).toBe('')
           return { data: undefined, error: null, response: { ok: true, status: 200, statusText: 'OK' } }
         } }
@@ -494,7 +494,7 @@ describe('ipc sessions, messages, and agent channels', () => {
 
     it('sends a prompt with custom parts', async () => {
       h.mocks.getClient.mockReturnValue({
-        session: { promptAsync: (args: any) => {
+        session: { promptAsync: (args: { body: { parts?: unknown[] } }) => {
           expect(args.body.parts).toBeDefined()
           return { data: undefined, error: null, response: { ok: true, status: 200, statusText: 'OK' } }
         } },
@@ -514,7 +514,7 @@ describe('ipc sessions, messages, and agent channels', () => {
 
     it('sends a prompt with optional tool policy', async () => {
       h.mocks.getClient.mockReturnValue({
-        session: { promptAsync: (args: any) => {
+        session: { promptAsync: (args: { body: { tools: Record<string, boolean> } }) => {
           expect(args.body.tools).toBeDefined()
           expect(args.body.tools.some_tool).toBe(true)
           return { data: undefined, error: null, response: { ok: true, status: 200, statusText: 'OK' } }
@@ -535,7 +535,7 @@ describe('ipc sessions, messages, and agent channels', () => {
 
     it('sends a prompt with optional agent override', async () => {
       h.mocks.getClient.mockReturnValue({
-        session: { promptAsync: (args: any) => {
+        session: { promptAsync: (args: { body: { agent?: string } }) => {
           expect(args.body.agent).toBe('plan')
           return { data: undefined, error: null, response: { ok: true, status: 200, statusText: 'OK' } }
         } },

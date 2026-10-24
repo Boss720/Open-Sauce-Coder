@@ -1,10 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
-import { DagRunner, type DagRunnerOptions } from '../harness/dag/runner'
+import { DagRunner } from '../harness/dag/runner'
 import type {
   DagEvent,
   DagExecutionPlan,
   DagNodeDefinition,
-  WorkflowDefinition
 } from '../harness/dag/types'
 import type { AgentRunner, RunnerEvent, RunnerResult } from '../harness/runner'
 import type { AgentProfile } from '../harness/profiles'
@@ -12,6 +11,7 @@ import type { ProviderAdapter } from '../harness/providers/adapter'
 import { ToolRegistry } from '../harness/tools/registry'
 import { ProfileStore } from '../harness/profileStore'
 import { ProviderRegistry } from '../harness/providers/registry'
+import * as customToolsModule from '../harness/tools/custom'
 
 function makeNode(overrides: Partial<DagNodeDefinition> = {}): DagNodeDefinition {
   return {
@@ -23,20 +23,7 @@ function makeNode(overrides: Partial<DagNodeDefinition> = {}): DagNodeDefinition
   }
 }
 
-function makePlan(nodes: DagNodeDefinition[], waves?: Array<{ waveIndex: number; nodeIds: string[] }>): DagExecutionPlan {
-  const workflow: WorkflowDefinition = {
-    id: 'test-wf-' + Math.random().toString(36).slice(2, 7),
-    name: 'Test Workflow',
-    nodes
-  }
 
-  const defaultWaves = waves ?? [
-    { waveIndex: 0, nodeIds: nodes.filter((n) => !n.dependencies?.length).map((n) => n.id) },
-    { waveIndex: 1, nodeIds: nodes.filter((n) => n.dependencies?.length).map((n) => n.id) }
-  ].filter((w) => w.nodeIds.length > 0)
-
-  return { workflow, waves: defaultWaves }
-}
 
 interface MockRunnerBehavior {
   result?: Partial<RunnerResult>
@@ -382,7 +369,6 @@ describe('DagRunner', () => {
       ]
     }
 
-    let nodeARunnerInstanceAbort: (() => void) | undefined
 
     const { factory, runnerInstances } = createMockRunnerFactory({
       nodeA: {
@@ -474,7 +460,7 @@ describe('DagRunner', () => {
 
     const mockProviderRegistry = {
       isSupported: (p: string) => p === 'custom-stub',
-      resolve: (p: string) => (p === 'custom-stub' ? mockAdapter : (null as any)),
+      resolve: (p: string) => (p === 'custom-stub' ? mockAdapter : null),
       list: () => ['custom-stub']
     } as unknown as ProviderRegistry
 
@@ -598,7 +584,7 @@ describe('DagRunner', () => {
 
     const mockProviderRegistry = {
       isSupported: (p: string) => p === 'custom-art',
-      resolve: (p: string) => (p === 'custom-art' ? mockAdapter : (null as any)),
+      resolve: (p: string) => (p === 'custom-art' ? mockAdapter : null),
       list: () => ['custom-art']
     } as unknown as ProviderRegistry
 
@@ -622,6 +608,94 @@ describe('DagRunner', () => {
     expect(nodeOutput?.artifacts?.length).toBe(1)
     expect(nodeOutput?.artifacts?.[0].name).toBe('patch.diff')
     expect(nodeOutput?.artifacts?.[0].content).toContain('-old\n+new')
+  })
+
+  it('wraps tool execution with artifact capture even when defaultTools is not pre-supplied', async () => {
+    let capturedNodeTools: ToolRegistry | undefined
+    const mockProfileStore = {
+      get: (id: string) => ({
+        id,
+        name: id,
+        provider: 'mock-p',
+        model: 'mock-m',
+        tools: ['*']
+      })
+    } as unknown as ProfileStore
+
+    const spy = vi.spyOn(customToolsModule, 'loadCustomTools').mockImplementation((registry) => {
+      registry.register(
+        {
+          name: 'custom_artifact_tool',
+          description: 'Generates custom artifact',
+          parameters: { type: 'object' },
+          category: 'custom'
+        },
+        async () => ({
+          output: 'artifact generated',
+          artifacts: [
+            {
+              name: 'report.json',
+              content: '{"vulnerabilities": 0}',
+              mime: 'application/json'
+            }
+          ]
+        })
+      )
+    })
+
+    try {
+      const node = makeNode({ id: 'wrap-node', profileId: 'default-profile', prompt: 'Run tool' })
+      const plan: DagExecutionPlan = {
+        workflow: { id: 'artifact-no-tools-wf', name: 'Artifact Without Default Tools', nodes: [node] },
+        waves: [{ waveIndex: 0, nodeIds: ['wrap-node'] }]
+      }
+
+      const runner = new DagRunner(plan, '/test-dir', {
+        profiles: mockProfileStore,
+        runnerFactory: (params) => {
+          capturedNodeTools = params.tools
+          return {
+            id: params.id,
+            run: async () => {
+              // Execute the custom tool through the wrapped registry
+              const toolResult = await params.tools.execute('custom_artifact_tool', {}, {
+                directory: '/test-dir',
+                agentId: params.id,
+                runId: 'dag-run-1',
+                abortSignal: new AbortController().signal
+              })
+              expect(toolResult.output).toBe('artifact generated')
+              return {
+                content: 'Tool executed',
+                toolCallCount: 1,
+                usage: { input: 10, output: 10 },
+                turns: 1,
+                finishReason: 'complete' as const
+              }
+            },
+            abort: vi.fn(),
+            getStatus: vi.fn(() => ({ turns: 1, usage: { input: 10, output: 10 }, running: false }))
+          } as unknown as AgentRunner
+        }
+      })
+
+      const state = await runner.run()
+      expect(state.status).toBe('completed')
+      expect(capturedNodeTools).toBeDefined()
+      expect(capturedNodeTools?.resolve('custom_artifact_tool')).toBeDefined()
+
+      // Deep verification: assert that the returned artifact was captured into node output!
+      const nodeOutput = runner.nodeOutputs.get('wrap-node')
+      expect(nodeOutput?.artifacts).toBeDefined()
+      expect(nodeOutput?.artifacts).toHaveLength(1)
+      expect(nodeOutput?.artifacts?.[0]).toEqual({
+        name: 'report.json',
+        content: '{"vulnerabilities": 0}',
+        mime: 'application/json'
+      })
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('marks node failed when prompt interpolation fails due to undeclared dependency', async () => {

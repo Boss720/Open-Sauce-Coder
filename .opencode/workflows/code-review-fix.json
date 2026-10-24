@@ -1,0 +1,46 @@
+{
+  "id": "code-review-fix",
+  "name": "Code Review -> Test Writer -> Fixer",
+  "description": "Automated 3-stage quality pipeline: thorough code review, adversarial test writing, and bug fixing.",
+  "version": "1.0.0",
+  "nodes": [
+    {
+      "id": "code_reviewer",
+      "name": "Code Reviewer",
+      "profileId": "reviewer",
+      "prompt": "You are the Code Reviewer agent.\n\nPerform a comprehensive code review of the workspace:\n1. Inspect recent changes, git history, or target files using grep, fs_list, and fs_read.\n2. Identify functional bugs, edge-case mishandling, type errors, performance bottlenecks, or security flaws.\n3. For each defect found, document:\n   - File path and approximate line numbers\n   - Description of the defect and severity (Critical, Major, Minor)\n   - Reproduction conditions or failing scenario\n   - Recommended architectural fix strategy\n4. Produce a structured review summary detailing all findings.",
+      "dependencies": [],
+      "policy": {
+        "abortOnFail": true
+      },
+      "maxTurns": 15
+    },
+    {
+      "id": "test_writer",
+      "name": "Test Writer",
+      "profileId": "coder",
+      "prompt": "You are the Test Writer agent.\nYour objective is to author automated tests for the issues identified in the code review.\n\nCode Review Findings:\n{{inputs.code_reviewer.output}}\n\nInstructions:\n1. Review the defect descriptions above.\n2. Inspect existing test conventions and frameworks in the repository using fs_read, fs_list, or grep.\n3. Create or update test files covering each reported defect using fs_write or fs_patch.\n4. Run the tests using the shell tool (e.g. npm test or vitest) to verify that the tests properly reproduce or assert the expected behavior.\n5. Provide a detailed summary of:\n   - New or updated test files and test case names\n   - Commands executed and their outputs\n   - Which tests currently fail (confirming the bug) or pass",
+      "dependencies": [
+        "code_reviewer"
+      ],
+      "policy": {
+        "abortOnFail": true
+      },
+      "maxTurns": 25
+    },
+    {
+      "id": "fixer",
+      "name": "Fixer",
+      "profileId": "coder",
+      "prompt": "You are the Fixer agent.\nYour objective is to fix the issues identified by the Code Reviewer and ensure all tests authored by the Test Writer pass cleanly.\n\nCode Review Findings:\n{{inputs.code_reviewer.output}}\n\nTest Writer Report:\n{{inputs.test_writer.output}}\n\nInstructions:\n1. Analyze the review findings and the newly authored tests.\n2. Modify the implementation files using fs_patch or fs_write to fix each defect. Avoid unnecessary stylistic refactoring.\n3. Run the project tests and typecheck using the shell tool (e.g. npm test, npm run typecheck, npm run lint).\n4. Ensure all newly written tests and pre-existing regression test suites pass with 0 errors.\n5. Summarize all changes applied:\n   - Files modified with diff summaries\n   - Final test and typecheck execution results\n   - Confirmation of defect resolution",
+      "dependencies": [
+        "code_reviewer",
+        "test_writer"
+      ],
+      "policy": {
+        "abortOnFail": true
+      },
+      "maxTurns": 35
+    }
+  ]
+}

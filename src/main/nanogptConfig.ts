@@ -24,7 +24,7 @@
  * provider. No new at-rest copy of the key is created, and the generated config is safe to log.
  */
 import { app } from 'electron'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { fetchImageModels, fetchSubscriptionModels, type NanoChatModel, type NanoImageModel } from './nanogpt'

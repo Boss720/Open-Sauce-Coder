@@ -65,6 +65,7 @@ function buildMocks() {
     fromWebContents: vi.fn<AnyFn>(() => null),
     getFocusedWindow: vi.fn<AnyFn>(() => null),
     writeFile: vi.fn<AnyFn>(async () => undefined),
+    readFile: vi.fn<AnyFn>(async () => '{}'),
 
     // --- server ---
     getStatus: vi.fn<AnyFn>(() => ({ state: 'ready' })),
@@ -164,6 +165,19 @@ function buildMocks() {
     /** Wired to return `harnessController` in loadIpc unless overridden. */
     getHarnessController: vi.fn<AnyFn>(),
 
+    // --- DAG orchestration engine ---
+    dagController: {
+      startDagRun: vi.fn<AnyFn>(async () => ({ dagRunId: 'dag-run-1' })),
+      stopDagRun: vi.fn<AnyFn>(async () => true),
+      getDagRunStatus: vi.fn<AnyFn>(() => null),
+      listDagRuns: vi.fn<AnyFn>(() => [] as unknown[]),
+      setEventCallback: vi.fn<AnyFn>()
+    },
+    getDagController: vi.fn<AnyFn>(),
+    listWorkflows: vi.fn<AnyFn>(async () => [] as unknown[]),
+    loadWorkflow: vi.fn<AnyFn>(async () => ({ id: 'stub', name: 'Stub', nodes: [] })),
+    validateWorkflow: vi.fn<AnyFn>((wf: unknown) => ({ valid: true, plan: { workflow: wf, waves: [] }, errors: [] })),
+
     // --- injected controllers ---
     appSettingsGet: vi.fn<AnyFn>(() => ({ settings: {} })),
     appSettingsSet: vi.fn<AnyFn>(() => ({ settings: {} })),
@@ -189,6 +203,9 @@ export async function loadIpc(
   }
   if (!overrides.getHarnessController) {
     mocks.getHarnessController.mockReturnValue(mocks.harnessController)
+  }
+  if (!overrides.getDagController) {
+    mocks.getDagController.mockReturnValue(mocks.dagController)
   }
 
   const handlers = new Map<string, StubHandler>()
@@ -299,7 +316,22 @@ export async function loadIpc(
   vi.doMock('../terminal', () => ({ register: mocks.registerTerminal }))
   vi.doMock('../openEditor', () => ({ register: mocks.registerOpenEditor }))
   vi.doMock('../harness/controller', () => ({ getHarnessController: mocks.getHarnessController }))
-  vi.doMock('node:fs/promises', () => ({ writeFile: mocks.writeFile, mkdir: vi.fn(), readdir: vi.fn(), stat: vi.fn(), unlink: vi.fn() }))
+  vi.doMock('../harness/dag', () => ({
+    getDagController: mocks.getDagController,
+    listWorkflows: mocks.listWorkflows,
+    loadWorkflow: mocks.loadWorkflow,
+    validateWorkflow: mocks.validateWorkflow
+  }))
+  vi.doMock('node:fs/promises', () => ({
+    writeFile: mocks.writeFile,
+    readFile: mocks.readFile,
+    mkdir: vi.fn(),
+    readdir: vi.fn(),
+    // Callers size-check files before reading them; report a small file so the
+    // read proceeds instead of throwing on an undefined stat result.
+    stat: vi.fn(async () => ({ size: 1024, isFile: () => true, isDirectory: () => false })),
+    unlink: vi.fn()
+  }))
 
   const ipc = await import('../ipc')
   ipc.registerIpc({

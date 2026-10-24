@@ -111,5 +111,6 @@ export interface WorkflowSummary {
   name: string
   description?: string
   nodeCount: number
-  filePath: string
+  /** Absolute path on disk; absent for builtin templates, which have no file. */
+  filePath?: string
 }

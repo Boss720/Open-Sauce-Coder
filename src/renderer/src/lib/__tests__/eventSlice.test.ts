@@ -26,7 +26,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import type { OpencodeApi } from '../slices/api'
 import type { AppState, SetState, GetState } from '../slices/types'
-import type { MessageWithParts, OcEvent } from '../types'
+import type { Message, MessageWithParts, OcEvent, Part, Permission, Session } from '../types'
 
 vi.mock('../slices/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../slices/api')>()
@@ -53,6 +53,10 @@ import {
 } from '../slices/attemptMachine'
 
 const mockApi = vi.mocked(api)
+
+type ApiOverrides = Omit<Partial<OpencodeApi>, 'sessions'> & {
+  sessions?: Partial<OpencodeApi['sessions']>
+}
 
 /* ------------------------------------------------------------------ *
  * Harness — mirrors the createStore()/setup() idiom used by
@@ -119,7 +123,7 @@ function flush(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0))
 }
 
-function fakeApi(overrides: Partial<OpencodeApi> = {}): OpencodeApi {
+function fakeApi(overrides: ApiOverrides = {}): OpencodeApi {
   return {
     sessions: { todos: vi.fn(async () => []) },
     messages: vi.fn(async () => []),
@@ -129,11 +133,11 @@ function fakeApi(overrides: Partial<OpencodeApi> = {}): OpencodeApi {
   } as unknown as OpencodeApi
 }
 
-function userMsg(id: string, sessionID: string, overrides: Record<string, unknown> = {}) {
-  return { id, sessionID, role: 'user', time: { created: 100 }, ...overrides } as any
+function userMsg(id: string, sessionID: string, overrides: Record<string, unknown> = {}): Message {
+  return { id, sessionID, role: 'user', time: { created: 100 }, ...overrides } as unknown as Message
 }
 
-function asstMsg(id: string, sessionID: string, overrides: Record<string, unknown> = {}) {
+function asstMsg(id: string, sessionID: string, overrides: Record<string, unknown> = {}): Message {
   return {
     id,
     sessionID,
@@ -146,22 +150,26 @@ function asstMsg(id: string, sessionID: string, overrides: Record<string, unknow
     cost: 0,
     tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
     ...overrides
-  } as any
+  } as unknown as Message
 }
 
-function withParts(info: unknown, parts: unknown[] = []): MessageWithParts {
+function withParts(info: Message, parts: Part[] = []): MessageWithParts {
   return { info, parts } as MessageWithParts
 }
 
-function textPart(id: string, messageID: string, sessionID: string, text: string, overrides: Record<string, unknown> = {}) {
-  return { id, sessionID, messageID, type: 'text', text, ...overrides } as any
+function textContent(part: Part | undefined): string | undefined {
+  return part?.type === 'text' ? part.text : undefined
 }
 
-function toolPart(id: string, messageID: string, sessionID: string, state: Record<string, unknown>, overrides: Record<string, unknown> = {}) {
-  return { id, sessionID, messageID, type: 'tool', callID: 'call-1', tool: 'bash', state, ...overrides } as any
+function textPart(id: string, messageID: string, sessionID: string, text: string, overrides: Record<string, unknown> = {}): Part {
+  return { id, sessionID, messageID, type: 'text', text, ...overrides } as unknown as Part
 }
 
-function permissionFixture(id: string, sessionID: string, overrides: Record<string, unknown> = {}) {
+function toolPart(id: string, messageID: string, sessionID: string, state: Record<string, unknown>, overrides: Record<string, unknown> = {}): Part {
+  return { id, sessionID, messageID, type: 'tool', callID: 'call-1', tool: 'bash', state, ...overrides } as unknown as Part
+}
+
+function permissionFixture(id: string, sessionID: string, overrides: Record<string, unknown> = {}): Permission {
   return {
     id,
     type: 'bash',
@@ -171,10 +179,10 @@ function permissionFixture(id: string, sessionID: string, overrides: Record<stri
     metadata: {},
     time: { created: 100 },
     ...overrides
-  } as any
+  } as unknown as Permission
 }
 
-function sessionFixture(id: string, overrides: Record<string, unknown> = {}) {
+function sessionFixture(id: string, overrides: Record<string, unknown> = {}): Session {
   return {
     id,
     projectID: 'p1',
@@ -183,7 +191,7 @@ function sessionFixture(id: string, overrides: Record<string, unknown> = {}) {
     version: '1',
     time: { created: 1, updated: 1 },
     ...overrides
-  } as any
+  } as unknown as Session
 }
 
 function ev(type: string, properties: Record<string, unknown>): OcEvent {
@@ -280,7 +288,7 @@ describe('eventSlice: applyEvent', () => {
 
       const parts = get().messages[0]!.parts
       expect(parts).toHaveLength(1)
-      expect((parts[0] as any).text).toBe('Hello world')
+      expect(textContent(parts[0])).toBe('Hello world')
     })
 
     it('preserves first-seen part order when a second part starts streaming', () => {
@@ -419,8 +427,11 @@ describe('eventSlice: applyEvent', () => {
       slice.applyEvent(ev('message.part.updated', { part: toolPart('t1', 'm1', 'sess-1', { status: 'error', error: 'boom' }) }))
 
       expect(getActiveAttempt()!.pausedForTool).toBe(false)
-      const stored = get().messages[0]!.parts.find((p) => p.id === 't1') as any
+      const stored = get().messages[0]!.parts.find((p) => p.id === 't1')
+      expect(stored?.type).toBe('tool')
+      if (stored?.type !== 'tool') throw new Error('Expected a tool part')
       expect(stored.state.status).toBe('error')
+      if (stored.state.status !== 'error') throw new Error('Expected the tool state to be an error')
       expect(stored.state.error).toBe('boom')
     })
   })
@@ -918,8 +929,8 @@ describe('eventSlice: applyEvent', () => {
 
   describe('todo.updated / session.compacted / vcs.branch.updated / file.edited', () => {
     it('todo.updated for the active session fetches and stores fresh todos', async () => {
-      const todos = [{ id: 't1', content: 'do thing', status: 'pending' } as any]
-      mockApi.mockReturnValue(fakeApi({ sessions: { todos: vi.fn(async () => todos) } } as any))
+      const todos = [{ id: 't1', content: 'do thing', status: 'pending' } as unknown as Partial<OpencodeApi>]
+      mockApi.mockReturnValue(fakeApi({ sessions: { todos: vi.fn(async () => todos) } } as unknown as Partial<OpencodeApi>))
       const { get, slice } = setup({ activeSessionID: 'sess-1', directory: '/proj', todos: [] })
 
       slice.applyEvent(ev('todo.updated', { sessionID: 'sess-1' }))
@@ -930,7 +941,7 @@ describe('eventSlice: applyEvent', () => {
 
     it('todo.updated for a non-active session does not touch todos', async () => {
       const todosFn = vi.fn(async () => [])
-      mockApi.mockReturnValue(fakeApi({ sessions: { todos: todosFn } } as any))
+      mockApi.mockReturnValue(fakeApi({ sessions: { todos: todosFn } } as unknown as Partial<OpencodeApi>))
       const { get, slice } = setup({ activeSessionID: 'sess-1', directory: '/proj', todos: [] })
 
       slice.applyEvent(ev('todo.updated', { sessionID: 'other' }))
@@ -957,7 +968,7 @@ describe('eventSlice: applyEvent', () => {
 
     it('session.compacted reloads messages and appends a "Context compacted." notice', async () => {
       const loaded = [withParts(userMsg('m1', 'sess-1', { time: { created: 100 } }))]
-      mockApi.mockReturnValue(fakeApi({ messages: vi.fn(async () => loaded) } as any))
+      mockApi.mockReturnValue(fakeApi({ messages: vi.fn(async () => loaded) } as unknown as Partial<OpencodeApi>))
       const { get, slice } = setup({ activeSessionID: 'sess-1', directory: '/proj', messages: [] })
 
       slice.applyEvent(ev('session.compacted', { sessionID: 'sess-1' }))
@@ -965,12 +976,12 @@ describe('eventSlice: applyEvent', () => {
 
       expect(get().messages).toHaveLength(2)
       const notice = get().messages[1]!
-      expect((notice.parts[0] as any).text).toBe('Context compacted.')
+      expect(textContent(notice.parts[0])).toBe('Context compacted.')
     })
 
     it('session.compacted for a non-active session does not touch messages', async () => {
       const messagesFn = vi.fn(async () => [])
-      mockApi.mockReturnValue(fakeApi({ messages: messagesFn } as any))
+      mockApi.mockReturnValue(fakeApi({ messages: messagesFn } as unknown as Partial<OpencodeApi>))
       const { get, slice } = setup({ activeSessionID: 'sess-1', directory: '/proj', messages: [] })
 
       slice.applyEvent(ev('session.compacted', { sessionID: 'other' }))

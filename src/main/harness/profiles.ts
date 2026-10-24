@@ -327,5 +327,19 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = Object.freeze([
     tools: ['*'],
     maxTurns: 30,
     builtin: true
+  },
+  {
+    id: 'opencode-agent',
+    name: 'OpenCode Assistant',
+    description: 'Supervised OpenCode serve engine running local models or configured server providers.',
+    provider: 'opencode',
+    model: 'default',
+    temperature: 0.2,
+    maxTokens: 16384,
+    // The bridge returns text only and cannot route tool calls through the
+    // harness ToolRegistry, so this profile requests none.
+    tools: [],
+    maxTurns: 40,
+    builtin: true
   }
 ])

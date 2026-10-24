@@ -156,11 +156,35 @@ All tests run via `vitest` under Node.js environment.
 
 ---
 
-## 5. Next Planned Horizons
+## 5. Completed Horizons & Upgrades (October 2026)
 
-1. **Visual DAG Canvas UI (`DagPanel.tsx`)**:
-   - Build a visual React node graph editor in the renderer for dragging, connecting, and viewing multi-agent DAG execution in real time.
-2. **Workflow File Templates**:
-   - Provide built-in workflow templates in `.opencode/workflows/` (e.g., Code Reviewer -> Test Writer -> Fixer pipeline).
-3. **OpenCode Serve Bridge Provider**:
-   - Add an adapter that allows harness nodes to invoke the local `opencode serve` child process directly for specialized operations.
+All three previously planned horizons have been fully implemented, tested, and audited:
+
+1. **Visual DAG Canvas UI (`DagPanel.tsx` & `DagPanel.css`)**:
+   - Interactive SVG cubic bezier curve connectors with dynamic status-colored arrowheads.
+   - HTML node cards featuring status badges, role tags, pulse ring animations, and selection drawers.
+   - Pure zero-dependency Kahn topological sorting and wave geometry in `src/renderer/src/lib/dagLayout.ts`.
+   - Reactive Zustand store slice in `src/renderer/src/lib/slices/dagSlice.ts` with bounded FIFO event ring buffer (`MAX_DAG_EVENTS = 500`).
+   - Integrated into `App.tsx`, `Sidebar.tsx`, `StatusBar.tsx`, and `CommandPalette.tsx`.
+2. **Built-in Workflow Templates**:
+   - Declarative JSON pipelines under `.opencode/workflows/`:
+     - `code-review-fix.json`: 3-wave pipeline (`code_reviewer` -> `test_writer` -> `fixer`).
+     - `feature-implementation.json`: 3-wave pipeline (`architect` -> `implementer` -> `verifier`).
+   - Programmatic seed and fallback definitions in `src/main/harness/dag/builtinWorkflows.ts`.
+   - Backward-compatible workflow discovery in `src/main/harness/dag/workflowLoader.ts` (`listWorkflows(dir, { includeBuiltin: true })`).
+3. **OpenCode Serve Bridge Provider Adapter (`opencodeBridge.ts`)**:
+   - Implemented `ProviderAdapter` with `id: 'opencode'`, bridging agent turns directly to the local supervised `opencode serve` server instance.
+   - Real-time token and reasoning SSE stream delta translation via `onDelta`.
+   - Hardened against circular session serialization errors and abort listener leaks.
+   - Registered in `src/main/harness/providers/registry.ts`, `providerCatalog.ts`, and selectable in `HarnessPanel.tsx`.
+
+---
+
+## 6. Verification & Test Metrics
+
+- `node scripts/check-contracts.mjs` → **Clean (0 drift across 106 invoke channels, 11 send channels, and 120 preload methods)**
+- `npm run typecheck` → **Clean (0 errors across both tsconfig.node.json and tsconfig.web.json)**
+- `npm run lint` → **Clean (0 errors, 162 baseline warnings preserved)**
+- `npm run test` → **2,282 / 2,282 tests passing across 123 test files (100% green)**
+- `npm run build` → **Clean production bundle (32.98s)**
+

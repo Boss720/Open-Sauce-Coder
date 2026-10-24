@@ -235,7 +235,7 @@ describe('ipc nanogpt channels', () => {
           fetchedAt: 0
         })),
         acquireSlot: vi.fn(async () => () => {}),
-        generateImage: vi.fn(async (args) => ({
+        generateImage: vi.fn(async (args: { n: number }) => ({
           images: Array(args.n).fill({ b64: 'mock-base64' }),
           paymentSource: 'subscription'
         })),
@@ -272,7 +272,7 @@ describe('ipc nanogpt channels', () => {
           fetchedAt: 0
         })),
         acquireSlot: vi.fn(async () => () => {}),
-        generateImage: vi.fn(async (args) => ({
+        generateImage: vi.fn(async () => ({
           images: [{ b64: 'mock' }],
           paymentSource: 'subscription'
         })),

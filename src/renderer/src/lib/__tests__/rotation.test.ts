@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { classifyError, isRateLimitError, isTokenThroughputLimit, pickDefaultModel, restoredSelectionValid, PREFERRED_MODELS } from '../rotation'
 import type { Provider } from '../types'
 
+type ProviderModel = Provider['models'][string]
+
 describe('rotation helpers', () => {
   describe('classifyError', () => {
     it('classifies 429 as rpm-wait', () => {
@@ -113,12 +115,12 @@ describe('rotation helpers', () => {
               id: 'gemini-3.6-flash',
               name: 'Gemini 3.6 Flash',
               capabilities: { toolcall: true, input: { text: true }, output: { text: true } }
-            } as any,
+            } as unknown as ProviderModel,
             'gemini-2.5-flash': {
               id: 'gemini-2.5-flash',
               name: 'Gemini 2.5 Flash',
               capabilities: { toolcall: true, input: { text: true }, output: { text: true } }
-            } as any
+            } as unknown as ProviderModel
           }
         }
       ]
@@ -142,7 +144,7 @@ describe('rotation helpers', () => {
               id: 'llama-3.3-70b-versatile',
               name: 'Llama 3.3 70B',
               capabilities: { toolcall: true, input: { text: true }, output: { text: true } }
-            } as any
+            } as unknown as ProviderModel
           }
         }
       ]
@@ -158,7 +160,7 @@ describe('rotation helpers', () => {
           'qwen/qwen3-32b': {
             id: 'qwen/qwen3-32b', name: 'Qwen3 32B',
             capabilities: { toolcall: true, input: { text: true }, output: { text: true } }
-          } as any
+          } as unknown as ProviderModel
         }
       }]
       expect(pickDefaultModel(mockProviders)).toEqual({ providerID: 'groq', modelID: 'qwen/qwen3-32b' })
@@ -178,7 +180,7 @@ describe('rotation helpers', () => {
             id: 'gemini-3.6-flash',
             name: 'Gemini 3.6 Flash',
             capabilities: { toolcall: true, input: { text: true }, output: { text: true } }
-          } as any
+          } as unknown as ProviderModel
         }
       },
       {
@@ -192,7 +194,7 @@ describe('rotation helpers', () => {
             id: 'gpt-4o',
             name: 'GPT-4o',
             capabilities: { toolcall: true, input: { text: true }, output: { text: true } }
-          } as any
+          } as unknown as ProviderModel
         }
       }
     ]

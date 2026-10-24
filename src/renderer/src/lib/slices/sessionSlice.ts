@@ -399,8 +399,10 @@ export function createSessionSlice(set: SetState, get: GetState): SessionSlice {
           id: usrId,
           sessionID: sessionID!,
           role: 'user',
-          time: { created: Math.floor(Date.now() / 1000) }
-        } as any,
+          time: { created: Math.floor(Date.now() / 1000) },
+          agent: get().sessionAgents[sessionID!] ?? 'default',
+          model: { providerID: get().providerID ?? '', modelID: get().modelID ?? '' }
+        },
         parts: [
           {
             id: `part-${usrId}`,
@@ -408,7 +410,7 @@ export function createSessionSlice(set: SetState, get: GetState): SessionSlice {
             sessionID: sessionID!,
             type: 'text',
             text: cmdText
-          } as any
+          }
         ]
       }
       set((state) => ({ messages: sortMessages([...state.messages, userMsg]) }))
@@ -521,8 +523,8 @@ export function createSessionSlice(set: SetState, get: GetState): SessionSlice {
         const available = new Set<string>()
         for (const p of providers) {
           if (!linkedProviderIDs.includes(p.id)) continue
-          for (const m of Object.values(p.models ?? {}) as Array<{ id: string }>) {
-            if (isAgentModel(m as any) && isFreeModel(p.id, m.id)) available.add(`${p.id}/${m.id}`)
+          for (const m of Object.values(p.models ?? {})) {
+            if (isAgentModel(m) && isFreeModel(p.id, m.id)) available.add(`${p.id}/${m.id}`)
           }
         }
 
