@@ -101,7 +101,7 @@ the project directory. Shown here reviewing this repository's own uncommitted ch
 ## Download
 
 Pre-built Windows installers are published on the
-[GitHub Releases](https://github.com/bosscube1/OPENCCODE/releases) page:
+[GitHub Releases](https://github.com/Boss720/Open-Sauce-Coder/releases) page:
 
 - `OpenCode Desktop-<version>-setup.exe` — NSIS installer (per-user, desktop + start-menu
   shortcuts)

@@ -49,7 +49,7 @@ export const OPENAI_COMPATIBLE_CONFIGS: Record<string, OpenAiCompatibleConfig> =
     chatPath: '/chat/completions',
     probePath: '/models',
     defaultHeaders: {
-      'HTTP-Referer': 'https://github.com/bosscube1/OPENCCODE',
+      'HTTP-Referer': 'https://github.com/Boss720/Open-Sauce-Coder',
       'X-Title': 'OpenCode Desktop'
     }
   },

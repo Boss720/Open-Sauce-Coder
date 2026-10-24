@@ -909,7 +909,7 @@ Persist `directory`, `providerID`, `modelID`, `autoRotate`, `theme`, `modelPool`
 - `electron-updater` is a runtime dependency. Main owns update checks and emits sanitized
   `update:status` events. The application menu exposes `Check for Updates...`; downloaded updates
   require explicit user confirmation before `quitAndInstall()`.
-- GitHub publishing targets `bosscube1/OPENCCODE`; NSIS is the update-capable target. Portable builds
+- GitHub publishing targets `Boss720/Open-Sauce-Coder`; NSIS is the update-capable target. Portable builds
   remain available but are not auto-updated. Unsigned builds may trigger Windows SmartScreen.
 - Quick Entry uses the `.quick-entry` CSS namespace. No new global CSS tokens.
 

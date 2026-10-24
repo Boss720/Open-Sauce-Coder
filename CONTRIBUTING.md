@@ -68,7 +68,7 @@ behavior, also smoke test the running app (below).
 9. **No `gh` CLI, no direct pushes to `main`.** `gh` is not installed on the
    maintainer's machine and pushes to `main` are blocked. Push a feature
    branch and open the PR in the browser at
-   `https://github.com/bosscube1/OPENCCODE/pull/new/<branch>`.
+   `https://github.com/Boss720/Open-Sauce-Coder/pull/new/<branch>`.
 
 ## Driving the app — use the skill, not bare `npm run dev`
 

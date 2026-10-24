@@ -5,6 +5,37 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-10-24
+
+### Added
+
+- Multi-provider agentic harness: agent profiles, a tool registry and single-agent runs
+  alongside `opencode serve`.
+- Multi-agent DAG workflow engine (waves, conditions, abort-on-fail) with the DagPanel graph
+  view, node drawer and built-in workflow templates.
+- Copper Focus UI, free model routing, the harness policy broker and the Leroy sidecar.
+- Opt-in updater log, with the differential download proven end to end.
+
+### Changed
+
+- The update feed and project links moved to `Boss720/Open-Sauce-Coder`. Installs of 1.0.3
+  or earlier keep checking the previous repository.
+- The main window is created hidden and shown on `ready-to-show`, without the always-on-top
+  toggle that stole focus on tray and second-instance shows.
+
+### Fixed
+
+- DAG workflows load by project directory and id only, never from a renderer-supplied path.
+- DAG node failures are no longer swallowed, and stranded nodes fail the run.
+- The OpenCode bridge completes without relying on `session.idle`, no longer echoes the
+  prompt, and rejects requests that carry harness tools.
+- The DAG panel no longer mixes up state between overlapping runs.
+- Run-level limits: 5M tokens, 30 minutes, 8 parallel nodes, 128 nodes and node `maxTurns`
+  capped by its profile.
+- `lifecycle.log` redacts credentials, caps line length and rotates at 1 MiB.
+- DAG IPC payloads (run status, run list and events) are bounded to 64 KiB per string.
+
+
 ## [1.0.3] - 2026-08-05
 
 ### Added

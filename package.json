@@ -1,6 +1,6 @@
 {
   "name": "opencode-desktop",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "description": "Claude-Code-style desktop GUI powered by OpenCode — any model provider",
   "main": "./out/main/index.js",
   "author": "",

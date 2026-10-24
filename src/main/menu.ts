@@ -128,7 +128,7 @@ export function setupApplicationMenu(actions: ApplicationMenuActions = {}): void
         {
           label: 'OpenCode Desktop on GitHub',
           click: () => {
-            void shell.openExternal('https://github.com/bosscube1/OPENCCODE')
+            void shell.openExternal('https://github.com/Boss720/Open-Sauce-Coder')
           }
         }
       ]

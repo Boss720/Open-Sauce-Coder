@@ -54,5 +54,5 @@ portable:
 
 publish:
   provider: github
-  owner: bosscube1
-  repo: OPENCCODE
+  owner: Boss720
+  repo: Open-Sauce-Coder

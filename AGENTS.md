@@ -110,7 +110,7 @@ npm run dist:win     # build + package Windows installers into dist/
 - Windows is the primary target: the app spawns `opencode.cmd`, reaps children with
   `taskkill`, and encrypts keys via DPAPI (`safeStorage`). Keep Windows behavior
   first-class when changing process/env/storage code.
-- electron-builder publishes to GitHub (`bosscube1/OPENCCODE`); `electron-updater` in the
+- electron-builder publishes to GitHub (`Boss720/Open-Sauce-Coder`); `electron-updater` in the
   main process consumes that feed for auto-updates.
 
 ## Code style guidelines
