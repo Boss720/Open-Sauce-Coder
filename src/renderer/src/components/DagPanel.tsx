@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { JSX, MouseEvent as ReactMouseEvent } from 'react'
 import { useStore } from '../lib/store'
 import { computeDagLayout, type DagGraphLayout } from '../lib/dagLayout'
+import { applyDagWheel, clampDagZoom } from '../lib/dagView'
 import type { DagNodeDefinition, WorkflowDefinition } from '../lib/types'
 import './DagPanel.css'
 
@@ -135,28 +136,21 @@ export function DagPanel({ compact = false }: DagPanelProps): JSX.Element {
     const el = viewportRef.current
     if (!el) return
     const onWheel = (e: WheelEvent): void => {
-      const { pan: curPan, zoom: curZoom } = viewRef.current
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault()
-        const factor = e.deltaY < 0 ? 1.1 : 0.9
-        const newZoom = Math.min(2.0, Math.max(0.3, curZoom * factor))
-        const rect = el.getBoundingClientRect()
-        const mouseX = e.clientX - rect.left
-        const mouseY = e.clientY - rect.top
-        const newPan = {
-          x: mouseX - (mouseX - curPan.x) * (newZoom / curZoom),
-          y: mouseY - (mouseY - curPan.y) * (newZoom / curZoom)
-        }
-        // Several wheel events can land before the next render (trackpad pinch);
-        // update the ref now so each one builds on the last instead of stale state.
-        viewRef.current = { pan: newPan, zoom: newZoom }
-        setZoom(newZoom)
-        setPan(newPan)
-      } else {
-        const newPan = { x: curPan.x - e.deltaX, y: curPan.y - e.deltaY }
-        viewRef.current = { pan: newPan, zoom: curZoom }
-        setPan(newPan)
-      }
+      if (e.ctrlKey || e.metaKey) e.preventDefault()
+      const rect = el.getBoundingClientRect()
+      const next = applyDagWheel(viewRef.current, {
+        ctrlKey: e.ctrlKey,
+        metaKey: e.metaKey,
+        deltaX: e.deltaX,
+        deltaY: e.deltaY,
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top
+      })
+      // Several wheel events can land before the next render (trackpad pinch);
+      // update the ref now so each one builds on the last instead of stale state.
+      viewRef.current = next
+      setZoom(next.zoom)
+      setPan(next.pan)
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
@@ -164,7 +158,7 @@ export function DagPanel({ compact = false }: DagPanelProps): JSX.Element {
 
   // Zoom button handlers
   const handleZoomDelta = (factor: number) => {
-    setZoom((z) => Math.min(2.0, Math.max(0.3, z * factor)))
+    setZoom((z) => clampDagZoom(z * factor))
   }
 
   const handleResetZoom = () => {
