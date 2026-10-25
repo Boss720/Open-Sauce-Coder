@@ -21,11 +21,20 @@ export type ToolCall = {
   }
 }
 
+/**
+ * Provider-opaque state an adapter needs echoed back verbatim on later turns
+ * (Anthropic thinking blocks with signatures, Gemini thought signatures). The
+ * runner copies it from ChatResponse onto the assistant message and never
+ * inspects it; each adapter reads only its own key and ignores the rest.
+ */
+export type ProviderReplay = Record<string, unknown>
+
 export type ChatMessage = {
   role: 'system' | 'user' | 'assistant' | 'tool'
   content: string | ContentPart[] | null
   tool_call_id?: string
   tool_calls?: ToolCall[]
+  providerReplay?: ProviderReplay
 }
 
 // ── Tool schema ──
@@ -65,6 +74,7 @@ export type ChatResponse = {
   finishReason: 'stop' | 'tool_calls' | 'length' | 'error'
   usage: { input: number; output: number; reasoning?: number }
   thinkingContent?: string
+  providerReplay?: ProviderReplay
 }
 
 export type ChatDelta = {

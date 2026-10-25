@@ -12,7 +12,8 @@ import type {
   ChatRequest,
   ChatResponse,
   ChatDelta,
-  FunctionDefinition
+  FunctionDefinition,
+  ToolCall
 } from './providers/adapter'
 import type { ToolRegistry, ToolContext } from './tools/registry'
 import { policyBroker } from '../policyBroker'
@@ -40,6 +41,12 @@ const DEFAULT_MAX_TURNS = 50
 
 /** Maximum characters per tool output inserted into message history. */
 const MAX_TOOL_OUTPUT_CHARS = 30_000
+
+/** Maximum characters of a tool's error text kept ahead of the loop guidance. */
+const MAX_TOOL_ERROR_CHARS = 10_000
+
+/** Maximum characters of malformed raw arguments echoed back to the model. */
+const MAX_RAW_ARGS_ECHO_CHARS = 500
 
 /** Consecutive identical failing calls before loop guidance warning. */
 const REPETITIVE_CALL_LIMIT = 3
@@ -87,12 +94,20 @@ export function parseToolArgs(raw: string): { ok: true; args: Record<string, unk
   }
 }
 
-export function truncateToolOutput(output: string): string {
-  if (output.length <= MAX_TOOL_OUTPUT_CHARS) return output
+export function truncateToolOutput(output: string, limit: number = MAX_TOOL_OUTPUT_CHARS): string {
+  if (output.length <= limit) return output
   return (
-    output.slice(0, MAX_TOOL_OUTPUT_CHARS) +
-    `\n\n[Output truncated: showing first ${MAX_TOOL_OUTPUT_CHARS.toLocaleString()} of ${output.length.toLocaleString()} characters...]`
+    output.slice(0, limit) +
+    `\n\n[Output truncated: showing first ${limit.toLocaleString()} of ${output.length.toLocaleString()} characters...]`
   )
+}
+
+function loopWarning(toolName: string): string {
+  return `System Warning: You have called "${toolName}" with identical arguments ${REPETITIVE_CALL_LIMIT} times without progress. Please choose an alternative approach or explain the blocker.`
+}
+
+function toUsageNumber(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
 }
 
 export class AgentRunner {
@@ -127,11 +142,17 @@ export class AgentRunner {
   }
 
   abort(): void {
+    // Abort the shared signal first: it reaches request.signal and every ToolContext.abortSignal
+    // even if an adapter's own abort() misbehaves.
     this.abortController.abort()
-    if (this.activeRequestId) {
-      this.adapter.abort(this.activeRequestId)
+    const requestIds = this.activeRequestId ? [this.activeRequestId, this.id] : [this.id]
+    for (const requestId of requestIds) {
+      try {
+        this.adapter.abort(requestId)
+      } catch {
+        // An adapter failing to cancel must never stop the runner from cancelling.
+      }
     }
-    this.adapter.abort(this.id)
   }
 
   getStatus(): { turns: number; usage: { input: number; output: number; reasoning?: number }; running: boolean } {
@@ -145,6 +166,7 @@ export class AgentRunner {
     this.running = true
     let toolCallCount = 0
     const maxTurns = this.profile.maxTurns ?? DEFAULT_MAX_TURNS
+    const signal = this.abortController.signal
 
     // Build initial messages
     const messages: ChatMessage[] = []
@@ -165,9 +187,33 @@ export class AgentRunner {
       }
     }))
 
+    /**
+     * Report one tool call's outcome: emit the UI event and append exactly one tool message for
+     * the call. Every path that answers a tool_call id goes through here so the 30k context
+     * guard can never be bypassed.
+     */
+    const answerToolCall = (
+      tc: ToolCall,
+      toolName: string,
+      content: string,
+      event: { output: string; error?: string }
+    ): void => {
+      onEvent({
+        type: 'tool_result',
+        name: toolName,
+        output: event.output.slice(0, 2000),
+        ...(event.error !== undefined ? { error: truncateToolOutput(event.error) } : {})
+      })
+      messages.push({
+        role: 'tool',
+        content: truncateToolOutput(content),
+        tool_call_id: tc.id
+      })
+    }
+
     try {
       while (this.turns < maxTurns) {
-        if (this.abortController.signal.aborted) {
+        if (signal.aborted) {
           return this.finish('aborted', '', toolCallCount, onEvent)
         }
 
@@ -182,7 +228,7 @@ export class AgentRunner {
         this.activeRequestId = requestId
         const request: ChatRequest = {
           requestId,
-          signal: this.abortController.signal,
+          signal,
           model: this.profile.model,
           messages: [...messages],
           tools: toolSchemas.length > 0 ? toolSchemas : undefined,
@@ -201,7 +247,7 @@ export class AgentRunner {
         let streamedText = false
 
         const onDelta = (delta: ChatDelta): void => {
-          if (this.abortController.signal.aborted || !this.running) return
+          if (signal.aborted || !this.running) return
           if (delta.thinkingContent && delta.thinkingContent.length > 0) {
             streamedThinking = true
             onEvent({ type: 'thinking', content: delta.thinkingContent })
@@ -212,26 +258,25 @@ export class AgentRunner {
           }
         }
 
-        // Call provider
+        // Call provider. Racing the abort signal keeps Stop responsive even if an adapter
+        // does not honour request.signal.
         let response: ChatResponse
         try {
-          response = await this.adapter.chat(request, onDelta)
+          response = await this.raceAbort(this.adapter.chat(request, onDelta))
         } finally {
           this.activeRequestId = null
         }
 
-        if (this.abortController.signal.aborted) {
+        // A response that came back was billed: account for it even if abort raced it.
+        this.turns++
+        this.addUsage(response.usage)
+
+        if (signal.aborted) {
           return this.finish('aborted', '', toolCallCount, onEvent)
         }
 
-        this.turns++
-
-        // Track usage
-        this.totalUsage.input += response.usage.input
-        this.totalUsage.output += response.usage.output
-        if (response.usage.reasoning) {
-          this.totalUsage.reasoning += response.usage.reasoning
-        }
+        const content = typeof response.content === 'string' ? response.content : ''
+        const toolCalls = response.toolCalls ?? []
 
         // Emit thinking content if present and not already streamed via deltas
         if (response.thinkingContent && !streamedThinking) {
@@ -239,25 +284,44 @@ export class AgentRunner {
         }
 
         // Emit text content if present and not already streamed via deltas
-        if (response.content.length > 0 && !streamedText) {
-          onEvent({ type: 'text', delta: response.content })
+        if (content.length > 0 && !streamedText) {
+          onEvent({ type: 'text', delta: content })
         }
 
-        // No tool calls → agent is done
-        if (response.finishReason !== 'tool_calls' || !response.toolCalls || response.toolCalls.length === 0) {
-          return this.finish('complete', response.content, toolCallCount, onEvent)
+        // No tool calls → agent is done (or the provider reported a failure)
+        if (toolCalls.length === 0) {
+          if (response.finishReason === 'error') {
+            const message = 'Provider returned an error response (finish reason "error") with no content or tool calls to act on.'
+            onEvent({ type: 'error', message })
+            return this.finish('error', content, toolCallCount, onEvent, message)
+          }
+          return this.finish('complete', content, toolCallCount, onEvent)
         }
 
-        // Append assistant message with tool calls
+        // Append assistant message with tool calls. Tool calls are honoured whatever finish
+        // reason the provider chose (Gemini and some OpenAI-compatible servers report "stop").
         messages.push({
           role: 'assistant',
-          content: response.content.length > 0 ? response.content : null,
-          tool_calls: response.toolCalls
+          content: content.length > 0 ? content : null,
+          tool_calls: toolCalls,
+          ...(response.providerReplay ? { providerReplay: response.providerReplay } : {})
         })
 
+        // Output-limit cut-off: the arguments are likely incomplete, so execute nothing. Every
+        // call still gets its tool message so the model can retry with a smaller call.
+        if (response.finishReason === 'length') {
+          for (const tc of toolCalls) {
+            toolCallCount++
+            const toolName = tc.function.name
+            const cutOff = `Error: Your response hit the output token limit while generating the "${toolName}" tool call, so the call was cut off and was NOT executed (its arguments are likely incomplete). Retry with a smaller call, for example by splitting large content across several calls.`
+            answerToolCall(tc, toolName, cutOff, { output: '', error: cutOff })
+          }
+          continue
+        }
+
         // Execute each tool call
-        for (const tc of response.toolCalls) {
-          if (this.abortController.signal.aborted) {
+        for (const tc of toolCalls) {
+          if (signal.aborted) {
             return this.finish('aborted', '', toolCallCount, onEvent)
           }
 
@@ -267,39 +331,25 @@ export class AgentRunner {
           const parseResult = parseToolArgs(tc.function.arguments)
           if (!parseResult.ok) {
             toolCallCount++
-            const malformedError = `Error: Tool arguments were not valid JSON (${parseResult.error}): "${parseResult.raw}". Please retry with valid JSON parameters matching the "${toolName}" schema.`
-            onEvent({
-              type: 'tool_result',
-              name: toolName,
-              output: '',
-              error: malformedError
-            })
-            messages.push({
-              role: 'tool',
-              content: malformedError,
-              tool_call_id: tc.id
-            })
+            const failures = this.recordFailure(`${toolName}:!malformed:${parseResult.raw}`)
+            const rawEcho = parseResult.raw.length > MAX_RAW_ARGS_ECHO_CHARS
+              ? `${parseResult.raw.slice(0, MAX_RAW_ARGS_ECHO_CHARS)}... [${parseResult.raw.length.toLocaleString()} characters total]`
+              : parseResult.raw
+            let malformedError = `Error: Tool arguments were not valid JSON (${parseResult.error}): "${rawEcho}". Please retry with valid JSON parameters matching the "${toolName}" schema.`
+            if (failures >= REPETITIVE_CALL_LIMIT) malformedError += `\n\n${loopWarning(toolName)}`
+            answerToolCall(tc, toolName, malformedError, { output: '', error: malformedError })
             continue
           }
 
           const args = parseResult.args
           const callSignature = `${toolName}:${canonicalJson(args)}`
 
-          // Check for repetitive failing tool call loop (3+ consecutive identical failures)
+          // Repetitive failing tool call loop: after 3 identical failures, stop executing the
+          // call and answer with guidance until the model changes approach.
           if (callSignature === this.lastCallSignature && this.consecutiveFailureCount >= REPETITIVE_CALL_LIMIT) {
             toolCallCount++
-            const loopWarning = `System Warning: You have called "${toolName}" with identical arguments 3 times without progress. Please choose an alternative approach or explain the blocker.`
-            onEvent({
-              type: 'tool_result',
-              name: toolName,
-              output: '',
-              error: loopWarning
-            })
-            messages.push({
-              role: 'tool',
-              content: loopWarning,
-              tool_call_id: tc.id
-            })
+            const warning = loopWarning(toolName)
+            answerToolCall(tc, toolName, warning, { output: '', error: warning })
             continue
           }
 
@@ -320,30 +370,11 @@ export class AgentRunner {
 
           if (policyViolation) {
             // Track failure
-            if (callSignature === this.lastCallSignature) {
-              this.consecutiveFailureCount++
-            } else {
-              this.lastCallSignature = callSignature
-              this.consecutiveFailureCount = 1
+            let policyError = truncateToolOutput(policyViolation, MAX_TOOL_ERROR_CHARS)
+            if (this.recordFailure(callSignature) >= REPETITIVE_CALL_LIMIT) {
+              policyError += `\n\n${loopWarning(toolName)}`
             }
-
-            let policyError = policyViolation
-            if (this.consecutiveFailureCount >= REPETITIVE_CALL_LIMIT) {
-              const warning = `\n\nSystem Warning: You have called "${toolName}" with identical arguments 3 times without progress. Please choose an alternative approach or explain the blocker.`
-              policyError += warning
-            }
-
-            onEvent({
-              type: 'tool_result',
-              name: toolName,
-              output: '',
-              error: policyError
-            })
-            messages.push({
-              role: 'tool',
-              content: truncateToolOutput(`Error: ${policyError}`),
-              tool_call_id: tc.id
-            })
+            answerToolCall(tc, toolName, `Error: ${policyError}`, { output: '', error: policyError })
             continue
           }
 
@@ -354,52 +385,31 @@ export class AgentRunner {
             directory: this.directory,
             agentId: this.profile.id,
             runId: this.id,
-            abortSignal: this.abortController.signal,
+            abortSignal: signal,
             profile: this.profile
           }
 
           const result = await this.tools.execute(toolName, args, context)
 
-          if (this.abortController.signal.aborted) {
+          if (signal.aborted) {
             return this.finish('aborted', '', toolCallCount, onEvent)
           }
 
-          // Loop failure detection tracking
+          const output = typeof result.output === 'string' ? result.output : String(result.output ?? '')
+          let error: string | undefined
           if (result.error) {
-            if (callSignature === this.lastCallSignature) {
-              this.consecutiveFailureCount++
-            } else {
-              this.lastCallSignature = callSignature
-              this.consecutiveFailureCount = 1
-            }
-
-            if (this.consecutiveFailureCount >= REPETITIVE_CALL_LIMIT) {
-              const warning = `\n\nSystem Warning: You have called "${toolName}" with identical arguments 3 times without progress. Please choose an alternative approach or explain the blocker.`
-              result.error += warning
+            error = truncateToolOutput(String(result.error), MAX_TOOL_ERROR_CHARS)
+            // Loop failure detection tracking
+            if (this.recordFailure(callSignature) >= REPETITIVE_CALL_LIMIT) {
+              error += `\n\n${loopWarning(toolName)}`
             }
           } else {
             // Successful execution resets failure tracking
-            this.consecutiveFailureCount = 0
-            this.lastCallSignature = ''
+            this.recordSuccess()
           }
 
-          onEvent({
-            type: 'tool_result',
-            name: toolName,
-            output: result.output.slice(0, 2000),
-            error: result.error
-          })
-
           // Append tool result as a tool message with 30k char context window protection
-          const toolMessageContent = result.error
-            ? `Error: ${result.error}\n${result.output}`
-            : result.output
-
-          messages.push({
-            role: 'tool',
-            content: truncateToolOutput(toolMessageContent),
-            tool_call_id: tc.id
-          })
+          answerToolCall(tc, toolName, error ? `Error: ${error}\n${output}` : output, { output, error })
         }
       }
 
@@ -407,15 +417,63 @@ export class AgentRunner {
       return this.finish('max_turns', '', toolCallCount, onEvent)
 
     } catch (error) {
-      if (this.abortController.signal.aborted) {
+      if (signal.aborted) {
         return this.finish('aborted', '', toolCallCount, onEvent)
       }
-      const message = error instanceof Error ? error.message : String(error)
+      // Provider messages are passed through unchanged (adapters already redact secrets).
+      const message = error instanceof Error
+        ? (error.message || error.name || 'Unknown error')
+        : (String(error) || 'Unknown error')
       onEvent({ type: 'error', message })
       return this.finish('error', '', toolCallCount, onEvent, message)
     } finally {
       this.running = false
     }
+  }
+
+  /** Reject as soon as the run is aborted, even if the wrapped promise never settles. */
+  private raceAbort<T>(promise: Promise<T>): Promise<T> {
+    const signal = this.abortController.signal
+    return new Promise<T>((resolve, reject) => {
+      const onAbort = (): void => reject(new Error('Run aborted'))
+      if (signal.aborted) {
+        onAbort()
+      } else {
+        signal.addEventListener('abort', onAbort, { once: true })
+      }
+      // Always attach handlers so a late rejection of an abandoned promise is never unhandled.
+      promise.then(
+        (value) => {
+          signal.removeEventListener('abort', onAbort)
+          resolve(value)
+        },
+        (err: unknown) => {
+          signal.removeEventListener('abort', onAbort)
+          reject(err)
+        }
+      )
+    })
+  }
+
+  private addUsage(usage: ChatResponse['usage'] | undefined): void {
+    this.totalUsage.input += toUsageNumber(usage?.input)
+    this.totalUsage.output += toUsageNumber(usage?.output)
+    this.totalUsage.reasoning += toUsageNumber(usage?.reasoning)
+  }
+
+  private recordFailure(signature: string): number {
+    if (signature === this.lastCallSignature) {
+      this.consecutiveFailureCount++
+    } else {
+      this.lastCallSignature = signature
+      this.consecutiveFailureCount = 1
+    }
+    return this.consecutiveFailureCount
+  }
+
+  private recordSuccess(): void {
+    this.consecutiveFailureCount = 0
+    this.lastCallSignature = ''
   }
 
   private finish(
