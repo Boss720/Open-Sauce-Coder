@@ -7,7 +7,7 @@
  *  - spawn / supervise / kill the child process (process-tree kill on Windows)
  *  - hold the single SSE subscription and rebroadcast events to registered listeners
  */
-import { execFile, spawn, type ChildProcess } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { homedir } from 'node:os'
@@ -201,14 +201,18 @@ function killTree(proc: ChildProcess): void {
 
   if (process.platform === 'win32') {
     // A .cmd launcher spawns a real process tree; taskkill /T is the only reliable way down.
-    execFile('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true }, (error) => {
-      if (!error) return
-      try {
-        proc.kill()
-      } catch {
-        /* already gone */
-      }
-    })
+    // Synchronous on purpose: on quit Electron exits within ~100 ms, and an async taskkill
+    // gets cut off after cmd.exe dies, orphaning the real opencode.exe on the port.
+    try {
+      const result = spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore',
+        timeout: 5000
+      })
+      if (result.error || result.status !== 0) proc.kill()
+    } catch {
+      /* already gone */
+    }
     return
   }
 
