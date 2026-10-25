@@ -1,5 +1,44 @@
 # HANDOFF.md
 
+## 0. In flight — broad model harness audit (2026-10-25, branch `harness`)
+
+Base: `dbb2e53` (quit-reap + DAG zoom fixes, not pushed). Spec: `.agents/teamwork/ORIGINAL_REQUEST.md`
+(2026-10-05 block, R1–R4). Shared plumbing landed first (uncommitted): `ProviderReplay` on
+`ChatMessage`/`ChatResponse` in `providers/adapter.ts`, copied onto the assistant message in
+`runner.ts`, so adapters can echo Anthropic thinking signatures / Gemini thought signatures.
+
+| Module | Files (exclusive) | Status |
+|---|---|---|
+| A Anthropic + OpenAI | `providers/anthropic.ts`, `providers/openai.ts`, new tests `harnessAnthropic.test.ts`, `harnessOpenAi.test.ts` | done, committed |
+| B Gemini + OpenAI-compat | `providers/gemini.ts`, `openaiCompatible.ts`, `nanogpt.ts`, `thinkTagStreamer.ts`, new tests `harnessGemini.test.ts`, `harnessOpenAiCompat.test.ts` | done, committed |
+| C Runner R2 | `runner.ts`, new test `harnessRunnerHardening.test.ts` | done, committed |
+| D Panel/profiles/presets R4 | `HarnessPanel.tsx`, `profiles.ts` | done, committed |
+| R3 tools | `tools/builtins.ts` (`fs_read` now says when it cuts at 2 MiB) | done, committed |
+
+Gate at commit time: typecheck 0, lint 0, check:contracts PASS, 2623/2623 tests,
+coverage 78.4/72.6/78.4/81.2 (gate 70/64/70/73).
+
+Fixed: Anthropic `budget_tokens`/`temperature` 400s on Claude 4.7+/5.x (now adaptive thinking,
+sampling only on <=4.6), thinking-signature replay, `refusal`, retry on 429/529/5xx, idle
+timeout; OpenAI reasoning detection for GPT-5+ and `content: null`; Gemini thought-signature
+replay, STOP+functionCall, unique call ids, thinkingLevel vs thinkingBudget; compat
+`reasoning_content` echo (DeepSeek/Moonshot only), split `<think>` tags, keys never sent to
+a foreign origin; runner executes tool calls on any finish reason, answers `length` cut-offs
+without executing, races abort.
+
+Open (not done):
+- No live provider call made yet (spends quota) and no UI pass in the running app.
+- `CUSTOM_API_KEY` for custom endpoints is read from `process.env` only — not in the BYOK
+  allowlist/UI (pre-existing; needs keys.ts + CONTRACTS change).
+- Gemini 3 history without stored signatures (e.g. imported from another provider) still 400s;
+  dummy-signature bypass not implemented (docs page moved, unverified).
+- Non-Anthropic presets partly stale (grok-2, moonshot-v1, cerebras llama3.3) — not verifiable
+  without provider docs; OpenAI/Gemini/OpenRouter presets refreshed from the live OpenRouter list.
+- Base URL field shows only for `custom`, not for built-in OpenAI-compatible providers.
+- Commits on `harness` are not pushed.
+
+---
+
 Written 2026-08-05, end of the release-hardening wave. Supersedes the wave-2 handoff
 (2026-08-04), whose open follow-ups are carried forward in full below — none of them were
 addressed by this wave.
