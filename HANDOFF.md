@@ -35,7 +35,43 @@ Open (not done):
 - Non-Anthropic presets partly stale (grok-2, moonshot-v1, cerebras llama3.3) — not verifiable
   without provider docs; OpenAI/Gemini/OpenRouter presets refreshed from the live OpenRouter list.
 - Base URL field shows only for `custom`, not for built-in OpenAI-compatible providers.
-- Commits on `harness` are not pushed.
+
+Live smoke 2026-10-25 (keys from the user's `.env`, never stored): Anthropic blocked by
+credit balance (400); gemini-3.5-flash and 2.5-flash completed a 5-turn tool run with
+signature replay; gemini-3.8-flash works but takes 90-140 s per turn. Gemini 3 sends no
+thought summaries when tools are attached, even with `thinkingLevel` set (provider
+behaviour, not an adapter bug). `harness` pushed to sauce at `16174b2`.
+
+### Wave 2 (done, 2026-10-25)
+
+| Module | Files (exclusive) | Status |
+|---|---|---|
+| E Key-origin guard | `providers/anthropic.ts`, `providers/openai.ts`, `providers/openaiCompatible.ts` + their 3 test files | done, committed |
+| F Gemini dummy signature | `providers/gemini.ts`, `harnessGemini.test.ts` | done, committed |
+| G Base URL field + presets | `HarnessPanel.tsx`, `profiles.ts` | done, committed |
+
+- E: Anthropic/OpenAI adapters sent the stored key to any `profile.baseUrl`; now only to
+  their own origin (blank base URL = default). Compat providers may list
+  `officialBaseUrls` (Moonshot `https://api.moonshot.ai/v1`).
+- F: Gemini 3 turns with unsigned function calls get `skip_thought_signature_validator`
+  on the first call. Live 2026-10-25, gemini-3.5-flash: unsigned 400, dummy 200.
+- G: Base URL field for every provider whose adapter honours it (not google / nanogpt /
+  opencode). Presets from live `/models` (Mistral, Cerebras) and official docs (xAI,
+  Moonshot, DeepSeek). `deepseek-chat` / `deepseek-reasoner` / `moonshot-v1-*` /
+  `grok-2` / `llama3.3-70b` / `mistral-large-latest` are gone; built-in profile
+  `deepseek-reasoner` (id kept) now runs `deepseek-v4-pro`.
+- UI pass in the dev app: xAI / Moonshot show the field with their default placeholder
+  and the key hint, Google shows none, Custom keeps the Ollama placeholder.
+- Gate: typecheck 0, lint 0, check:contracts PASS, 2664/2664 tests, coverage
+  78.42/72.72/78.57/81.23.
+
+Still open:
+- `CUSTOM_API_KEY` in BYOK (security design call: via ALLOWLIST it would also enter the
+  opencode child env).
+- Groq presets unverified (the `.env` Groq key returns 401).
+- Anthropic live call blocked on account credit.
+- Anthropic/OpenAI requests follow redirects; a cross-host redirect would carry
+  `x-api-key` (fetch strips only `Authorization`). Consider `redirect: 'error'`.
 
 ---
 
