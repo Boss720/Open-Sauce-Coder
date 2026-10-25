@@ -2,7 +2,7 @@
  * OpenAI provider adapter for the agentic harness.
  *
  * Implements native OpenAI Chat Completions API with tool calling,
- * support for standard models (GPT-4o) and reasoning models (o1, o3-mini)
+ * support for standard models (GPT-4o) and reasoning models (o-series, GPT-5)
  * with max_completion_tokens adaptation, streaming SSE, and credential resolution.
  *
  * SECURITY: the API key is resolved transiently via `loadByokEnv()` — never
@@ -20,7 +20,9 @@ import type {
 } from './adapter'
 
 const OPENAI_BASE_URL = 'https://api.openai.com/v1'
-const REQUEST_TIMEOUT_MS = 120_000
+/** No response headers / no stream bytes for this long aborts the request. Streams themselves may run far longer. */
+const IDLE_TIMEOUT_MS = 120_000
+const CONTENT_FILTER_NOTICE = '[OpenAI withheld this response (content filter)]'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
@@ -48,58 +50,160 @@ function safeError(error: unknown): string {
   return message
 }
 
-function isReasoningModel(model: string): boolean {
+/**
+ * Reasoning models (o1/o3/o4 series and GPT-5 onward, except `-chat` variants)
+ * take `max_completion_tokens` and `reasoning_effort`, and reject non-default
+ * temperature / top_p.
+ */
+export function isOpenAiReasoningModel(model: string): boolean {
   const lower = model.toLowerCase()
   const base = lower.split('/').pop() ?? lower
-  return base.startsWith('o1') || base.startsWith('o3') || base.startsWith('o4') || lower.includes('reasoner')
+  if (/^o\d/.test(base)) return true
+  const gpt = /^gpt-(\d+)/.exec(base)
+  if (gpt) return Number(gpt[1]) >= 5 && !base.includes('-chat')
+  return lower.includes('reasoner')
 }
 
-/** Sanitize messages for OpenAI: ensure assistant tool-calling messages use empty string, not null. */
-function sanitizeMessages(messages: ChatMessage[], isReasoning = false): Record<string, unknown>[] {
-  return messages.map((m) => {
+/** o1-mini / o1-preview predate `reasoning_effort` and reject it. */
+function supportsReasoningEffort(model: string): boolean {
+  const lower = model.toLowerCase()
+  const base = lower.split('/').pop() ?? lower
+  return !/^o1-(mini|preview)/.test(base)
+}
+
+function toolMessageText(content: ChatMessage['content']): string {
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    return content
+      .map((p) => (p.type === 'text' ? p.text : ''))
+      .filter((t) => t.length > 0)
+      .join('\n')
+  }
+  return ''
+}
+
+function hasContent(content: ChatMessage['content']): boolean {
+  if (typeof content === 'string') return content.length > 0
+  return Array.isArray(content) && content.length > 0
+}
+
+/**
+ * Sanitize messages for OpenAI. Assistant messages that carry tool_calls and no
+ * text send `content: null` (strict servers reject an empty string); an
+ * assistant message with neither text nor tool_calls is invalid and dropped.
+ */
+export function sanitizeOpenAiMessages(messages: ChatMessage[], isReasoning = false): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = []
+  for (const m of messages) {
     let role: string = m.role
     if (isReasoning && role === 'system') {
       role = 'developer'
     }
-    const content = m.content ?? ''
 
-    if (role === 'assistant' && m.tool_calls && m.tool_calls.length > 0) {
-      return {
-        role: 'assistant',
-        content,
-        tool_calls: m.tool_calls
+    if (role === 'assistant') {
+      if (m.tool_calls && m.tool_calls.length > 0) {
+        out.push({
+          role: 'assistant',
+          content: hasContent(m.content) ? m.content : null,
+          tool_calls: m.tool_calls.map((tc) => ({
+            id: tc.id,
+            type: 'function',
+            function: { name: tc.function.name, arguments: tc.function.arguments }
+          }))
+        })
+      } else if (hasContent(m.content)) {
+        out.push({ role: 'assistant', content: m.content })
       }
+      continue
     }
 
     if (role === 'tool') {
-      return {
+      out.push({
         role: 'tool',
-        content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? ''),
+        content: toolMessageText(m.content),
         tool_call_id: m.tool_call_id
-      }
+      })
+      continue
     }
 
-    return {
-      role,
-      content
+    out.push({ role, content: m.content ?? '' })
+  }
+  return out
+}
+
+function describeHttpError(status: number, statusText: string, bodyText: string): string {
+  let detail = bodyText.trim()
+  try {
+    const parsed: unknown = JSON.parse(bodyText)
+    if (isRecord(parsed) && isRecord(parsed.error)) {
+      const parts = [parsed.error.code ?? parsed.error.type, parsed.error.message]
+        .filter((p): p is string => typeof p === 'string' && p.length > 0)
+      if (parts.length > 0) detail = parts.join(': ')
     }
-  })
+  } catch {
+    // plain-text body: use as is
+  }
+  return `OpenAI harness request failed: ${status} ${statusText}${detail ? ` — ${detail.slice(0, 300)}` : ''}`
+}
+
+/** Abort controller that follows the caller's signal and fires after `ms` without progress. */
+class Watchdog {
+  readonly controller = new AbortController()
+  timedOut = false
+  private timer: ReturnType<typeof setTimeout> | undefined
+  private readonly onParentAbort = (): void => this.controller.abort()
+
+  constructor(
+    private readonly parent: AbortSignal,
+    private readonly ms: number
+  ) {
+    if (parent.aborted) this.controller.abort()
+    else parent.addEventListener('abort', this.onParentAbort, { once: true })
+    this.touch()
+  }
+
+  get signal(): AbortSignal {
+    return this.controller.signal
+  }
+
+  touch(): void {
+    clearTimeout(this.timer)
+    this.timer = setTimeout(() => {
+      this.timedOut = true
+      this.controller.abort()
+    }, this.ms)
+  }
+
+  dispose(): void {
+    clearTimeout(this.timer)
+    this.parent.removeEventListener('abort', this.onParentAbort)
+  }
+}
+
+export type OpenAiAdapterOptions = {
+  /** Abort a request after this long without response headers or stream bytes. */
+  idleTimeoutMs?: number
 }
 
 export class OpenAiAdapter implements ProviderAdapter {
   readonly id = 'openai'
 
   private inflight = new Map<string, AbortController>()
+  private readonly idleTimeoutMs: number
+
+  constructor(options: OpenAiAdapterOptions = {}) {
+    this.idleTimeoutMs = options.idleTimeoutMs ?? IDLE_TIMEOUT_MS
+  }
 
   async chat(request: ChatRequest, onDelta?: (delta: ChatDelta) => void): Promise<ChatResponse> {
     const key = getApiKey()
-    const baseUrl = request.baseUrl ?? OPENAI_BASE_URL
+    const baseUrl = (request.baseUrl ?? OPENAI_BASE_URL).replace(/\/+$/, '')
     const url = `${baseUrl}/chat/completions`
 
-    const reasoning = isReasoningModel(request.model)
+    const reasoning = isOpenAiReasoningModel(request.model)
     const body: Record<string, unknown> = {
       model: request.model,
-      messages: sanitizeMessages(request.messages, reasoning),
+      messages: sanitizeOpenAiMessages(request.messages, reasoning),
       stream: true,
       stream_options: { include_usage: true }
     }
@@ -109,11 +213,11 @@ export class OpenAiAdapter implements ProviderAdapter {
     }
 
     if (reasoning) {
-      // Reasoning models (o1, o3-mini) use max_completion_tokens and do not accept temperature
+      // Reasoning models use max_completion_tokens and reject non-default temperature / top_p.
       if (request.maxTokens !== undefined) {
         body.max_completion_tokens = request.maxTokens
       }
-      if (request.thinking?.enabled) {
+      if (request.thinking?.enabled && supportsReasoningEffort(request.model)) {
         body.reasoning_effort = 'medium'
       }
     } else {
@@ -172,164 +276,221 @@ export class OpenAiAdapter implements ProviderAdapter {
     abort: AbortController,
     onDelta?: (delta: ChatDelta) => void
   ): Promise<ChatResponse> {
-    let res: Response
-    try {
-      res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${key}`
-        },
-        body: JSON.stringify(body),
-        signal: abort.signal.aborted
-          ? AbortSignal.abort()
-          : AbortSignal.any([abort.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)])
-      })
-    } catch (error) {
-      if (abort.signal.aborted) throw new Error('Request aborted.')
-      throw new Error(`Unable to reach OpenAI: ${safeError(error)}`)
+    if (abort.signal.aborted) throw new Error('Request aborted.')
+    const watchdog = new Watchdog(abort.signal, this.idleTimeoutMs)
+    const interruption = (): Error | null => {
+      if (abort.signal.aborted) return new Error('Request aborted.')
+      if (watchdog.timedOut) {
+        return new Error(`OpenAI stopped responding (no data for ${Math.round(this.idleTimeoutMs / 1000)}s).`)
+      }
+      return null
     }
 
-    if (!res.ok) {
-      let detail = ''
+    try {
+      let res: Response
       try {
-        detail = (await res.text()).slice(0, 300)
-      } catch { /* ignore */ }
-      throw new Error(`OpenAI harness request failed: ${res.status} ${res.statusText}${detail ? ` — ${detail}` : ''}`)
-    }
+        res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${key}`
+          },
+          body: JSON.stringify(body),
+          signal: watchdog.signal
+        })
+      } catch (error) {
+        throw interruption() ?? new Error(`Unable to reach OpenAI: ${safeError(error)}`)
+      }
+      watchdog.touch()
 
-    if (!res.body) throw new Error('OpenAI returned an empty response body.')
+      if (!res.ok) {
+        let bodyText = ''
+        try {
+          bodyText = await res.text()
+        } catch { /* ignore */ }
+        throw new Error(safeError(new Error(describeHttpError(res.status, res.statusText, bodyText))))
+      }
 
-    const reader = res.body.getReader()
-    const decoder = new TextDecoder('utf-8')
-    let buffer = ''
+      if (!res.body) throw new Error('OpenAI returned an empty response body.')
 
-    let fullText = ''
-    let fullThinking = ''
-    let responseId = requestId
-    let finishReason: ChatResponse['finishReason'] = 'stop'
-    let inputTokens = 0
-    let outputTokens = 0
-    let reasoningTokens: number | undefined
+      const reader = res.body.getReader()
+      const cancelReader = (): void => {
+        reader.cancel().catch(() => undefined)
+      }
+      if (watchdog.signal.aborted) cancelReader()
+      else watchdog.signal.addEventListener('abort', cancelReader, { once: true })
 
-    // Tool call accumulation map indexed by stream index
-    const toolCallsMap = new Map<number, { id: string; name: string; args: string }>()
+      const decoder = new TextDecoder('utf-8')
+      let buffer = ''
 
-    try {
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split(/\r?\n/)
-        buffer = lines.pop() ?? ''
+      let fullText = ''
+      let fullThinking = ''
+      let refusalText = ''
+      let responseId = requestId
+      let finishReason: ChatResponse['finishReason'] = 'stop'
+      let contentFiltered = false
+      let inputTokens = 0
+      let outputTokens = 0
+      let reasoningTokens: number | undefined
 
-        for (const line of lines) {
-          const trimmed = line.trim()
-          if (!trimmed || !trimmed.startsWith('data:')) continue
-          const dataStr = trimmed.slice(5).trim()
-          if (dataStr === '[DONE]') continue
+      // Tool call accumulation map indexed by stream index
+      const toolCallsMap = new Map<number, { id: string; name: string; args: string }>()
 
-          let chunk: Record<string, unknown>
-          try {
-            chunk = JSON.parse(dataStr) as Record<string, unknown>
-          } catch {
-            continue
+      const handleLine = (line: string): void => {
+        const trimmed = line.trim()
+        if (!trimmed || !trimmed.startsWith('data:')) return
+        const dataStr = trimmed.slice(5).trim()
+        if (dataStr === '[DONE]') return
+
+        let chunk: Record<string, unknown>
+        try {
+          chunk = JSON.parse(dataStr) as Record<string, unknown>
+        } catch {
+          return
+        }
+        if (!isRecord(chunk)) return
+
+        // In-stream error object (e.g. server_error mid-response)
+        if (isRecord(chunk.error)) {
+          const msg = typeof chunk.error.message === 'string' ? chunk.error.message : 'Unknown stream error'
+          throw new Error(safeError(new Error(`OpenAI stream error: ${msg}`)))
+        }
+
+        if (typeof chunk.id === 'string') responseId = chunk.id
+
+        if (isRecord(chunk.usage)) {
+          if (typeof chunk.usage.prompt_tokens === 'number') inputTokens = chunk.usage.prompt_tokens
+          if (typeof chunk.usage.completion_tokens === 'number') outputTokens = chunk.usage.completion_tokens
+          if (isRecord(chunk.usage.completion_tokens_details) && typeof chunk.usage.completion_tokens_details.reasoning_tokens === 'number') {
+            reasoningTokens = chunk.usage.completion_tokens_details.reasoning_tokens
           }
+        }
 
-          if (typeof chunk.id === 'string') responseId = chunk.id
+        const choices = Array.isArray(chunk.choices) ? chunk.choices : []
+        if (choices.length === 0) return
 
-          if (isRecord(chunk.usage)) {
-            if (typeof chunk.usage.prompt_tokens === 'number') inputTokens = chunk.usage.prompt_tokens
-            if (typeof chunk.usage.completion_tokens === 'number') outputTokens = chunk.usage.completion_tokens
-            if (isRecord(chunk.usage.completion_tokens_details) && typeof chunk.usage.completion_tokens_details.reasoning_tokens === 'number') {
-              reasoningTokens = chunk.usage.completion_tokens_details.reasoning_tokens
+        const choice = choices[0]
+        if (!isRecord(choice)) return
+
+        if (typeof choice.finish_reason === 'string') {
+          const fr = choice.finish_reason
+          if (fr === 'tool_calls' || fr === 'function_call') finishReason = 'tool_calls'
+          else if (fr === 'length') finishReason = 'length'
+          else if (fr === 'stop') finishReason = 'stop'
+          else if (fr === 'content_filter') contentFiltered = true
+        }
+
+        const delta = isRecord(choice.delta) ? choice.delta : {}
+
+        // Text content delta
+        if (typeof delta.content === 'string' && delta.content.length > 0) {
+          fullText += delta.content
+          onDelta?.({ content: delta.content })
+        }
+
+        // Reasoning content delta (compatible servers; native o-series does not stream reasoning text)
+        if (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0) {
+          fullThinking += delta.reasoning_content
+          onDelta?.({ thinkingContent: delta.reasoning_content })
+        }
+
+        // Structured safety refusal
+        if (typeof delta.refusal === 'string' && delta.refusal.length > 0) {
+          refusalText += delta.refusal
+        }
+
+        // Tool calls delta
+        if (Array.isArray(delta.tool_calls)) {
+          for (const tcDelta of delta.tool_calls) {
+            if (!isRecord(tcDelta)) continue
+            const idx = typeof tcDelta.index === 'number' ? tcDelta.index : 0
+            const existing = toolCallsMap.get(idx) ?? { id: '', name: '', args: '' }
+
+            if (typeof tcDelta.id === 'string' && tcDelta.id.length > 0) {
+              existing.id = tcDelta.id
             }
-          }
-
-          const choices = Array.isArray(chunk.choices) ? chunk.choices : []
-          if (choices.length === 0) continue
-
-          const choice = choices[0]
-          if (!isRecord(choice)) continue
-
-          if (typeof choice.finish_reason === 'string') {
-            const fr = choice.finish_reason
-            if (fr === 'tool_calls') finishReason = 'tool_calls'
-            else if (fr === 'length') finishReason = 'length'
-            else if (fr === 'stop') finishReason = 'stop'
-          }
-
-          const delta = isRecord(choice.delta) ? choice.delta : {}
-
-          // Text content delta
-          if (typeof delta.content === 'string' && delta.content.length > 0) {
-            fullText += delta.content
-            onDelta?.({ content: delta.content })
-          }
-
-          // Reasoning content delta (o1/o3-mini or deepseek-style)
-          if (typeof delta.reasoning_content === 'string' && delta.reasoning_content.length > 0) {
-            fullThinking += delta.reasoning_content
-            onDelta?.({ thinkingContent: delta.reasoning_content })
-          }
-
-          // Tool calls delta
-          if (Array.isArray(delta.tool_calls)) {
-            for (const tcDelta of delta.tool_calls) {
-              if (!isRecord(tcDelta)) continue
-              const idx = typeof tcDelta.index === 'number' ? tcDelta.index : 0
-              const existing = toolCallsMap.get(idx) ?? { id: '', name: '', args: '' }
-
-              if (typeof tcDelta.id === 'string' && tcDelta.id.length > 0) {
-                existing.id = tcDelta.id
+            if (isRecord(tcDelta.function)) {
+              if (typeof tcDelta.function.name === 'string') {
+                existing.name += tcDelta.function.name
               }
-              if (isRecord(tcDelta.function)) {
-                if (typeof tcDelta.function.name === 'string') {
-                  existing.name += tcDelta.function.name
-                }
-                if (typeof tcDelta.function.arguments === 'string') {
-                  existing.args += tcDelta.function.arguments
-                }
+              if (typeof tcDelta.function.arguments === 'string') {
+                existing.args += tcDelta.function.arguments
               }
-
-              toolCallsMap.set(idx, existing)
             }
+
+            toolCallsMap.set(idx, existing)
           }
         }
       }
-    } finally {
-      reader.releaseLock()
-    }
 
-    const toolCalls: ToolCall[] = []
-    for (const item of toolCallsMap.values()) {
-      if (item.name) {
-        toolCalls.push({
-          id: item.id || `call_${toolCalls.length}`,
-          type: 'function',
-          function: {
-            name: item.name,
-            arguments: item.args || '{}'
+      let drained = false
+      try {
+        while (true) {
+          let chunk: Awaited<ReturnType<typeof reader.read>>
+          try {
+            chunk = await reader.read()
+          } catch (error) {
+            throw interruption() ?? new Error(`OpenAI stream failed: ${safeError(error)}`)
           }
-        })
+          if (chunk.done) break
+          watchdog.touch()
+          buffer += decoder.decode(chunk.value, { stream: true })
+          const lines = buffer.split(/\r?\n/)
+          buffer = lines.pop() ?? ''
+          for (const line of lines) handleLine(line)
+        }
+        buffer += decoder.decode()
+        if (buffer.length > 0) handleLine(buffer)
+        drained = true
+      } finally {
+        watchdog.signal.removeEventListener('abort', cancelReader)
+        // On any failure, close the connection instead of leaving the body dangling.
+        if (!drained) cancelReader()
+        reader.releaseLock()
       }
-    }
 
-    if (toolCalls.length > 0) {
-      finishReason = 'tool_calls'
-    }
+      const interrupted = interruption()
+      if (interrupted) throw interrupted
 
-    const usage = reasoningTokens !== undefined
-      ? { input: inputTokens, output: outputTokens, reasoning: reasoningTokens }
-      : { input: inputTokens, output: outputTokens }
+      const toolCalls: ToolCall[] = []
+      const orderedCalls = [...toolCallsMap.entries()].sort((a, b) => a[0] - b[0])
+      for (const [, item] of orderedCalls) {
+        if (item.name) {
+          toolCalls.push({
+            id: item.id || `call_${toolCalls.length}`,
+            type: 'function',
+            function: {
+              name: item.name,
+              arguments: item.args || '{}'
+            }
+          })
+        }
+      }
 
-    return {
-      id: responseId,
-      content: fullText,
-      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      finishReason,
-      usage,
-      thinkingContent: fullThinking.length > 0 ? fullThinking : undefined
+      if (toolCalls.length > 0) {
+        finishReason = 'tool_calls'
+      }
+
+      let content = fullText
+      if (content.length === 0 && toolCalls.length === 0) {
+        if (refusalText.length > 0) content = refusalText
+        else if (contentFiltered) content = CONTENT_FILTER_NOTICE
+      }
+
+      const usage = reasoningTokens !== undefined
+        ? { input: inputTokens, output: outputTokens, reasoning: reasoningTokens }
+        : { input: inputTokens, output: outputTokens }
+
+      return {
+        id: responseId,
+        content,
+        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+        finishReason,
+        usage,
+        thinkingContent: fullThinking.length > 0 ? fullThinking : undefined
+      }
+    } finally {
+      watchdog.dispose()
     }
   }
 }
