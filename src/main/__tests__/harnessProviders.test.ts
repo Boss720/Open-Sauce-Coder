@@ -278,7 +278,7 @@ describe('GeminiAdapter and toGeminiContents mapping', () => {
     })
   })
 
-  it('extractGeminiToolCalls preserves fc.id || fc.name', () => {
+  it('extractGeminiToolCalls preserves fc.id and synthesises a unique id when absent', () => {
     // When fc.id is provided
     const responseWithId = {
       candidates: [
@@ -302,7 +302,7 @@ describe('GeminiAdapter and toGeminiContents mapping', () => {
     expect(callsWithId?.[0].id).toBe('call_unique_777')
     expect(callsWithId?.[0].function.name).toBe('fs_write')
 
-    // When fc.id is missing, falls back to fc.name
+    // When fc.id is missing, a unique id is synthesised (never the bare function name)
     const responseWithoutId = {
       candidates: [
         {
@@ -321,7 +321,8 @@ describe('GeminiAdapter and toGeminiContents mapping', () => {
     }
     const callsWithoutId = extractGeminiToolCalls(responseWithoutId as unknown as Parameters<typeof extractGeminiToolCalls>[0])
     expect(callsWithoutId).toHaveLength(1)
-    expect(callsWithoutId?.[0].id).toBe('fs_list')
+    expect(callsWithoutId?.[0].id).toMatch(/^gemini-call-.+-0$/)
+    expect(callsWithoutId?.[0].id).not.toBe('fs_list')
     expect(callsWithoutId?.[0].function.name).toBe('fs_list')
   })
 
@@ -666,7 +667,7 @@ describe('OpenAiCompatibleAdapter and ThinkTagStreamer', () => {
     expect(result.text).toBe('Here is the solution.')
   })
 
-  it('sanitizes assistant content to empty string when tool calls are present', async () => {
+  it('sends content: null (never an empty string) for assistant tool-call messages without text', async () => {
     let capturedBody: Record<string, unknown> | null = null
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
       capturedBody = JSON.parse(String(init.body))
@@ -688,7 +689,7 @@ describe('OpenAiCompatibleAdapter and ThinkTagStreamer', () => {
         { role: 'user', content: 'Find files' },
         {
           role: 'assistant',
-          content: null, // null content with tool calls must be converted to empty string
+          content: null, // tool-call-only turn: sent as null, strict servers reject ''
           tool_calls: [{ id: 'tc1', type: 'function', function: { name: 'grep', arguments: '{}' } }]
         },
         { role: 'tool', tool_call_id: 'tc1', content: 'result' }
@@ -699,7 +700,7 @@ describe('OpenAiCompatibleAdapter and ThinkTagStreamer', () => {
     expect(capturedBody).not.toBeNull()
     const msgs = capturedBody!.messages as Array<{ role: string; content: unknown }>
     expect(msgs[1].role).toBe('assistant')
-    expect(msgs[1].content).toBe('') // Empty string, never null (prevents 400 on Groq/Mistral)
+    expect(msgs[1].content).toBeNull() // null, never '' (prevents 400 on strict OpenAI-compatible servers)
   })
 
   it('respects baseUrl override for custom/local endpoints (Ollama, LM Studio)', async () => {
