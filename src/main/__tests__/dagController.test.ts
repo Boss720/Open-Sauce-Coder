@@ -11,6 +11,10 @@ import {
 import { DagRunner } from '../harness/dag/runner'
 import type { DagEvent, DagNodeDefinition, DagRunState, WorkflowDefinition } from '../harness/dag/types'
 import type { AgentRunner, RunnerResult } from '../harness/runner'
+import type { ProfileStore } from '../harness/profileStore'
+import type { ChatResponse, ProviderAdapter } from '../harness/providers/adapter'
+import type { ProviderRegistry } from '../harness/providers/registry'
+import { ToolRegistry } from '../harness/tools/registry'
 import { tmpdir } from 'node:os'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -273,6 +277,146 @@ describe('DagController', () => {
       abortSpy.mockRestore()
       rmSync(testDir, { recursive: true, force: true })
     }
+  })
+})
+
+describe('DagController stopAll', () => {
+  function singleNodeWorkflow(nodeId: string): WorkflowDefinition {
+    return {
+      id: `wf-${nodeId}-${Math.random().toString(36).slice(2, 7)}`,
+      name: 'Single node',
+      nodes: [{ id: nodeId, profileId: 'mock-profile', prompt: 'go' }]
+    }
+  }
+
+  it('aborts every active run and marks it cancelled, leaving finished runs alone', async () => {
+    const testDir = mkdtempSync(join(tmpdir(), 'dag-test-'))
+    try {
+      const aborted: string[] = []
+      const runnerFactory = (params: { id: string; nodeId: string }) =>
+        ({
+          id: params.id,
+          run: vi.fn(async (): Promise<RunnerResult> => {
+            if (params.nodeId.startsWith('slow')) await new Promise((r) => setTimeout(r, 300))
+            return {
+              content: 'ok',
+              toolCallCount: 0,
+              usage: { input: 1, output: 1, reasoning: 0 },
+              turns: 1,
+              finishReason: 'complete'
+            }
+          }),
+          abort: vi.fn(() => {
+            aborted.push(params.nodeId)
+          }),
+          getStatus: () => ({ turns: 1, usage: { input: 1, output: 1 }, running: false })
+        }) as unknown as AgentRunner
+      const controller = new DagController({ runnerFactory })
+
+      const quick = await controller.startDagRun({ workflow: singleNodeWorkflow('quick'), directory: testDir })
+      for (let i = 0; i < 100 && controller.getDagRunStatus(quick.dagRunId)?.status === 'running'; i++) {
+        await new Promise((r) => setTimeout(r, 5))
+      }
+      expect(controller.getDagRunStatus(quick.dagRunId)?.status).toBe('completed')
+
+      const slowA = await controller.startDagRun({ workflow: singleNodeWorkflow('slow-a'), directory: testDir })
+      const slowB = await controller.startDagRun({ workflow: singleNodeWorkflow('slow-b'), directory: testDir })
+      await new Promise((r) => setTimeout(r, 20))
+      expect(controller.getDagRunStatus(slowA.dagRunId)?.status).toBe('running')
+
+      controller.stopAll()
+
+      // No await: runner.abort() cascades to the node runners in the same tick.
+      expect([...aborted].sort()).toEqual(['slow-a', 'slow-b'])
+      for (const { dagRunId } of [slowA, slowB]) {
+        const status = controller.getDagRunStatus(dagRunId)
+        expect(status?.status).toBe('cancelled')
+        expect(typeof status?.completedAt).toBe('number')
+      }
+      expect(controller.getDagRunStatus(quick.dagRunId)?.status).toBe('completed')
+
+      // Idempotent: nothing is left to abort.
+      controller.stopAll()
+      expect(aborted).toHaveLength(2)
+
+      await new Promise((r) => setTimeout(r, 400))
+    } finally {
+      rmSync(testDir, { recursive: true, force: true })
+    }
+  })
+
+  it('fires the tool abort signal of an in-flight real node runner synchronously', async () => {
+    const testDir = mkdtempSync(join(tmpdir(), 'dag-test-'))
+    try {
+      const fired: string[] = []
+      let started = 0
+      const tools = new ToolRegistry()
+      // Stand-in for a shell tool blocked on a child process; its abort listener is what
+      // calls killProcessTree in the real tools.
+      tools.register(
+        { name: 'probe', description: 'test hook', parameters: { type: 'object' }, category: 'read' },
+        (_args, ctx) =>
+          new Promise<never>(() => {
+            started++
+            ctx.abortSignal.addEventListener('abort', () => fired.push(ctx.runId), { once: true })
+          })
+      )
+      const adapter: ProviderAdapter = {
+        id: 'stub',
+        chat: vi.fn(
+          async (): Promise<ChatResponse> => ({
+            id: 'r',
+            content: '',
+            finishReason: 'tool_calls',
+            usage: { input: 1, output: 1 },
+            toolCalls: [{ id: 'c1', type: 'function', function: { name: 'probe', arguments: '{}' } }]
+          })
+        ),
+        abort: vi.fn(),
+        probe: vi.fn(async () => true)
+      }
+      const profiles = {
+        get: () => ({ id: 'mock-profile', name: 'Mock', provider: 'stub', model: 'm' })
+      } as unknown as ProfileStore
+      const providers = {
+        isSupported: () => true,
+        resolve: () => adapter
+      } as unknown as ProviderRegistry
+      const controller = new DagController({ profiles, providers, tools })
+
+      const { dagRunId } = await controller.startDagRun({
+        workflow: singleNodeWorkflow('node'),
+        directory: testDir
+      })
+      for (let i = 0; i < 200 && started === 0; i++) await new Promise((r) => setTimeout(r, 5))
+      expect(started).toBe(1)
+      expect(fired).toEqual([])
+
+      controller.stopAll()
+
+      expect(fired).toEqual([`${dagRunId}-node`])
+      expect(controller.getDagRunStatus(dagRunId)?.status).toBe('cancelled')
+    } finally {
+      rmSync(testDir, { recursive: true, force: true })
+    }
+  })
+
+  it('is a no-op with no runs', () => {
+    expect(() => new DagController().stopAll()).not.toThrow()
+  })
+
+  it('stopAllDagRuns sweeps an existing singleton but never constructs one', async () => {
+    vi.resetModules()
+    const mod = await import('../harness/dag/controller')
+    const spy = vi.spyOn(mod.DagController.prototype, 'stopAll')
+
+    mod.stopAllDagRuns()
+    expect(spy).not.toHaveBeenCalled()
+
+    mod.getDagController()
+    mod.stopAllDagRuns()
+    expect(spy).toHaveBeenCalledTimes(1)
+    spy.mockRestore()
   })
 })
 

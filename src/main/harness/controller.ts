@@ -166,6 +166,20 @@ export class HarnessController {
     run.status.completedAt = Date.now()
   }
 
+  /**
+   * Aborts every running run. Called on app quit: abort() fires each run's tool abort
+   * signal synchronously, which is what reaps shell trees before Electron exits.
+   */
+  stopAll(): void {
+    for (const runId of [...this.runs.keys()]) {
+      try {
+        this.stopRun(runId)
+      } catch {
+        /* keep stopping the rest */
+      }
+    }
+  }
+
   getRunStatus(runId: string): RunStatus | undefined {
     const run = this.runs.get(runId)
     if (!run) return undefined
@@ -199,4 +213,9 @@ export function getHarnessController(): HarnessController {
     singleton = new HarnessController()
   }
   return singleton
+}
+
+/** Aborts all active runs of the singleton, if it exists; never constructs it (quit path). */
+export function stopAllHarnessRuns(): void {
+  singleton?.stopAll()
 }

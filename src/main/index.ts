@@ -20,8 +20,9 @@ import { setupTray, type TrayController } from './tray'
 import { checkForUpdates, cleanupUpdater, setupUpdater, type UpdateStatus } from './updater'
 import { getStatus, onEvent, onStatus, startServer, stopServer, type ServerStatus } from './server'
 import { stopAllLeroy } from './leroy/sidecar'
-import { getHarnessController } from './harness/controller'
-import { getDagController } from './harness/dag'
+import { getHarnessController, stopAllHarnessRuns } from './harness/controller'
+import { getDagController, stopAllDagRuns } from './harness/dag'
+import { setSyncProcessKill } from './harness/tools/processKill'
 import { sanitizeLogLine } from './logRedact'
 
 /** Cap on lifecycle.log; past this it is rotated to lifecycle.log.1 (one generation). */
@@ -43,6 +44,29 @@ function logLifecycle(msg: string): void {
     )
   } catch {
     /* best-effort */
+  }
+}
+
+/**
+ * Abort live harness and DAG runs so the shells their tools spawned die with the app.
+ * Electron exits ~60 ms after 'before-quit', so tree kills are made synchronous first;
+ * an async taskkill would be cut off mid-run and orphan the grandchildren.
+ */
+function abortHarnessRuns(): void {
+  try {
+    setSyncProcessKill(true)
+  } catch (err) {
+    logLifecycle(`setSyncProcessKill failed: ${err}`)
+  }
+  try {
+    stopAllHarnessRuns()
+  } catch (err) {
+    logLifecycle(`stopAllHarnessRuns failed: ${err}`)
+  }
+  try {
+    stopAllDagRuns()
+  } catch (err) {
+    logLifecycle(`stopAllDagRuns failed: ${err}`)
   }
 }
 
@@ -462,6 +486,7 @@ if (!allowDevelopmentInstance && !singleInstance) {
     liveWindow = null
     stopAllGeminiLive()
     stopAllLeroy()
+    abortHarnessRuns()
     stopServer()
     unregisterIpc()
   })
@@ -472,6 +497,7 @@ if (!allowDevelopmentInstance && !singleInstance) {
     shuttingDown = true
     stopAllGeminiLive()
     stopAllLeroy()
+    abortHarnessRuns()
     stopServer()
     unregisterIpc()
   })

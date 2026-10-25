@@ -352,7 +352,9 @@ export function registerBuiltins(registry: ToolRegistry): void {
           cwd: context.directory,
           maxBuffer: 2 * 1024 * 1024,
           env: buildChildEnv({}),
-          signal: context.abortSignal
+          // Not on Windows: Node's own abort handling would TerminateProcess the root first and
+          // leave killProcessTree's `taskkill /T` nothing to walk, orphaning grandchildren.
+          ...(process.platform === 'win32' ? {} : { signal: context.abortSignal })
         })
         const child = (promise as { child?: ChildProcess }).child
         if (child && context.abortSignal) {
@@ -431,7 +433,9 @@ export function registerBuiltins(registry: ToolRegistry): void {
           cwd,
           maxBuffer: 2 * 1024 * 1024,
           env: buildChildEnv({}),
-          signal: combinedSignal
+          // Not on Windows: Node's own abort handling would TerminateProcess the root first and
+          // leave killProcessTree's `taskkill /T` nothing to walk, orphaning grandchildren.
+          ...(isWin ? {} : { signal: combinedSignal })
         })
         const child = (promise as { child?: ChildProcess }).child
         if (child) {

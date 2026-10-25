@@ -140,7 +140,9 @@ function makeExecutor(tool: CustomToolFile): ToolExecutor {
         timeout: tool.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         maxBuffer: MAX_BUFFER_BYTES,
         env: buildChildEnv({}),
-        signal: context.abortSignal
+        // Not on Windows: Node's own abort handling would TerminateProcess the root first and
+        // leave killProcessTree's `taskkill /T` nothing to walk, orphaning grandchildren.
+        ...(process.platform === 'win32' ? {} : { signal: context.abortSignal })
       })
       const child = (promise as { child?: ChildProcess }).child
       if (child && context.abortSignal) {

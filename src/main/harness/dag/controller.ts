@@ -183,6 +183,11 @@ export class DagController {
    * Returns true if run was active and aborted, false otherwise.
    */
   async stopDagRun(dagRunId: string): Promise<boolean> {
+    return this.abortRun(dagRunId)
+  }
+
+  /** Synchronous core of stopDagRun, shared with stopAll. */
+  private abortRun(dagRunId: string): boolean {
     const run = this.runs.get(dagRunId)
     if (!run) {
       return false
@@ -197,6 +202,21 @@ export class DagController {
     run.state.status = 'cancelled'
     run.state.completedAt = Date.now()
     return true
+  }
+
+  /**
+   * Aborts every active run. Called on app quit: abort() cascades to each node runner's
+   * tool abort signal synchronously, which is what reaps shell trees before Electron exits.
+   */
+  stopAll(): void {
+    for (const [dagRunId, { runner }] of [...this.runs]) {
+      if (isFinishedStatus(runner.getState().status)) continue
+      try {
+        this.abortRun(dagRunId)
+      } catch {
+        /* keep stopping the rest */
+      }
+    }
   }
 
   /**
@@ -238,4 +258,9 @@ export function getDagController(): DagController {
     singleton = new DagController()
   }
   return singleton
+}
+
+/** Aborts all active runs of the singleton, if it exists; never constructs it (quit path). */
+export function stopAllDagRuns(): void {
+  singleton?.stopAll()
 }
