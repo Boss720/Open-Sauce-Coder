@@ -27,15 +27,31 @@ const MODEL_PRESETS: Record<string, string[]> = {
   anthropic: ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5', 'claude-fable-5-1'],
   openai: ['gpt-5.5', 'gpt-5.4-mini', 'gpt-4o', 'o3-mini'],
   google: ['gemini-3.1-pro-preview', 'gemini-3.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash'],
-  deepseek: ['deepseek-chat', 'deepseek-reasoner'],
+  deepseek: ['deepseek-v4-pro', 'deepseek-flash'],
   groq: ['llama-3.3-70b-versatile', 'openai/gpt-oss-120b'],
   nanogpt: ['openai/gpt-4o', 'anthropic/claude-sonnet-5.5'],
   openrouter: ['anthropic/claude-sonnet-5.5', 'openai/gpt-5.5', 'google/gemini-3.5-flash', 'deepseek/deepseek-v4-pro'],
-  mistral: ['mistral-large-latest', 'codestral-latest'],
-  xai: ['grok-2-latest'],
-  cerebras: ['llama3.3-70b'],
-  moonshot: ['moonshot-v1-32k'],
+  mistral: ['mistral-medium-latest', 'codestral-latest', 'mistral-small-latest'],
+  xai: ['grok-4.7', 'grok-build-0.1'],
+  cerebras: ['gpt-oss-120b', 'qwen-3.8-27b'],
+  moonshot: ['kimi-k3.1-pro', 'kimi-k3.1-pro-highspeed'],
   custom: []
+}
+
+/**
+ * Default endpoint of each built-in provider whose adapter honours a Base URL override
+ * (Google, NanoGPT and OpenCode ignore it). Mirrors the defaults in main/harness/providers.
+ */
+const DEFAULT_BASE_URLS: Record<string, string> = {
+  anthropic: 'https://api.anthropic.com/v1',
+  openai: 'https://api.openai.com/v1',
+  deepseek: 'https://api.deepseek.com',
+  groq: 'https://api.groq.com/openai/v1',
+  openrouter: 'https://openrouter.ai/api/v1',
+  mistral: 'https://api.mistral.ai/v1',
+  xai: 'https://api.x.ai/v1',
+  cerebras: 'https://api.cerebras.ai/v1',
+  moonshot: 'https://api.moonshot.cn/v1'
 }
 
 function getToolIconAndCategory(name: string): { icon: string; className: string } {
@@ -593,18 +609,23 @@ export function HarnessPanel({ compact = false }: { compact?: boolean }): JSX.El
                   )}
                 </label>
               </div>
-              {draft.provider === 'custom' && (
+              {(draft.provider === 'custom' || DEFAULT_BASE_URLS[draft.provider]) && (
                 <label className="harness__field">
                   <span>Base URL</span>
                   <input
                     type="url"
                     value={draft.baseUrl}
                     disabled={draftLocked}
-                    placeholder="http://localhost:11434/v1 (Ollama) or http://localhost:1234/v1 (LM Studio)"
+                    placeholder={
+                      DEFAULT_BASE_URLS[draft.provider] ??
+                      'http://localhost:11434/v1 (Ollama) or http://localhost:1234/v1 (LM Studio)'
+                    }
                     onChange={(e) => patchDraft({ baseUrl: e.target.value })}
                   />
                   <span className="harness__muted">
-                    OpenAI-compatible server endpoint (e.g. Ollama, LM Studio, vLLM).
+                    {draft.provider === 'custom'
+                      ? 'OpenAI-compatible server endpoint (e.g. Ollama, LM Studio, vLLM).'
+                      : 'Leave empty for the default API. Your stored key is only sent to that API; any other host (a proxy or local server) gets no key.'}
                   </span>
                 </label>
               )}

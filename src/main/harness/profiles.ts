@@ -318,10 +318,10 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = Object.freeze([
   },
   {
     id: 'deepseek-reasoner',
-    name: 'DeepSeek Reasoner',
-    description: 'DeepSeek R1 reasoning model with chain-of-thought extraction for difficult algorithmic problems.',
+    name: 'DeepSeek V4 Pro',
+    description: 'DeepSeek V4 Pro reasoning model with chain-of-thought extraction for difficult algorithmic problems.',
     provider: 'deepseek',
-    model: 'deepseek-reasoner',
+    model: 'deepseek-v4-pro',
     temperature: 0.6,
     maxTokens: 16384,
     tools: ['*'],
