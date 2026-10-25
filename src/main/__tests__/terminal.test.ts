@@ -55,14 +55,27 @@ const mocks = vi.hoisted(() => {
     if (cb) cb(null)
   })
 
-  return { spawnedPtys, spawn, app, appListeners, execFile }
+  const spawnSync = vi.fn((_cmd: string, _args: string[], _opts: unknown) => ({ status: 0, error: undefined }))
+
+  return { spawnedPtys, spawn, app, appListeners, execFile, spawnSync }
 })
 
 vi.mock('node-pty', () => ({ spawn: mocks.spawn }))
 vi.mock('electron', () => ({ app: mocks.app }))
-vi.mock('node:child_process', () => ({ execFile: mocks.execFile }))
+vi.mock('node:child_process', () => ({ execFile: mocks.execFile, spawnSync: mocks.spawnSync }))
 
 import { register, type TermId } from '../terminal'
+
+/** Runs `fn` with `process.platform` stubbed, so the win32-only taskkill paths are exercised on any host. */
+function withPlatform<T>(platform: NodeJS.Platform, fn: () => T): T {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform')!
+  Object.defineProperty(process, 'platform', { value: platform })
+  try {
+    return fn()
+  } finally {
+    Object.defineProperty(process, 'platform', original)
+  }
+}
 
 /** Minimal fake IpcMain that records handlers by channel, matching what `register` needs. */
 function makeFakeIpc() {
@@ -254,6 +267,55 @@ describe('terminal service', () => {
           expect.any(Function)
         )
       }
+    })
+
+    it('uses async execFile, not spawnSync, for a per-session kill on Windows', () => {
+      const { id } = start(baseDir)
+      const pty = mocks.spawnedPtys[0]
+      const kill = ipc.handlers.get('oc:term:kill')!
+      withPlatform('win32', () => kill({}, id))
+      expect(mocks.execFile).toHaveBeenCalledTimes(1)
+      expect(mocks.execFile).toHaveBeenCalledWith(
+        'taskkill',
+        ['/pid', String(pty.pid), '/T', '/F'],
+        expect.objectContaining({ windowsHide: true }),
+        expect.any(Function)
+      )
+      expect(mocks.spawnSync).not.toHaveBeenCalled()
+      expect(pty.kill).toHaveBeenCalledTimes(1)
+    })
+
+    it('reaps a destroyed WebContents synchronously on Windows (window close precedes before-quit)', () => {
+      start(baseDir)
+      const pty = mocks.spawnedPtys[0]
+      withPlatform('win32', () => contents.__destroy())
+      expect(mocks.spawnSync).toHaveBeenCalledWith(
+        'taskkill',
+        ['/pid', String(pty.pid), '/T', '/F'],
+        expect.objectContaining({ windowsHide: true, stdio: 'ignore', timeout: 5000 })
+      )
+      expect(mocks.execFile).not.toHaveBeenCalled()
+      expect(pty.kill).toHaveBeenCalledTimes(1)
+    })
+
+    it('reaps every live tree synchronously on before-quit on Windows, without execFile', () => {
+      start(baseDir)
+      start(baseDir)
+      const ptys = [...mocks.spawnedPtys]
+      expect(ptys).toHaveLength(2)
+      const quitListeners = mocks.appListeners.get('before-quit') ?? new Set()
+      withPlatform('win32', () => {
+        for (const listener of quitListeners) listener()
+      })
+      for (const pty of ptys) {
+        expect(mocks.spawnSync).toHaveBeenCalledWith(
+          'taskkill',
+          ['/pid', String(pty.pid), '/T', '/F'],
+          expect.objectContaining({ windowsHide: true, stdio: 'ignore', timeout: 5000 })
+        )
+        expect(pty.kill).toHaveBeenCalledTimes(1)
+      }
+      expect(mocks.execFile).not.toHaveBeenCalled()
     })
   })
 })

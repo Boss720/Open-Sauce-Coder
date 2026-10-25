@@ -19,7 +19,7 @@
  *  - Output is coalesced/bounded before crossing IPC (see `MAX_BACKLOG_CHARS` / `FLUSH_MS`).
  */
 import { randomUUID } from 'node:crypto'
-import { execFile } from 'node:child_process'
+import { execFile, spawnSync } from 'node:child_process'
 import { basename, dirname } from 'node:path'
 import { app, type IpcMain, type WebContents } from 'electron'
 import * as pty from 'node-pty'
@@ -167,8 +167,10 @@ function untrack(id: TermId): TermSession | undefined {
 }
 
 /** On Windows a ConPTY-hosted shell can itself spawn a process tree; reap the whole tree, following
- * the same `taskkill /T /F` precedent server.ts uses to reap the opencode child. */
-function killSession(id: TermId): void {
+ * the same `taskkill /T /F` precedent server.ts uses to reap the opencode child. `sync` is for
+ * teardown (quit, WebContents destroyed); a single tab close stays async so it never blocks the main
+ * thread. */
+function killSession(id: TermId, opts: { sync?: boolean } = {}): void {
   const session = untrack(id)
   if (!session) return
   try {
@@ -178,9 +180,20 @@ function killSession(id: TermId): void {
     /* best-effort */
   }
   if (process.platform === 'win32') {
-    execFile('taskkill', ['/pid', String(session.proc.pid), '/T', '/F'], { windowsHide: true }, () => {
-      /* the pty's own onExit already reconciles session state; a taskkill failure here is not fatal */
-    })
+    const args = ['/pid', String(session.proc.pid), '/T', '/F']
+    if (opts.sync) {
+      // Synchronous on purpose: on quit Electron exits within ~100 ms, and an async taskkill gets
+      // cut off mid-run, orphaning grandchildren (e.g. a dev server started in the terminal).
+      try {
+        spawnSync('taskkill', args, { windowsHide: true, stdio: 'ignore', timeout: 5000 })
+      } catch {
+        /* already gone; proc.kill() below is the fallback */
+      }
+    } else {
+      execFile('taskkill', args, { windowsHide: true }, () => {
+        /* the pty's own onExit already reconciles session state; a taskkill failure here is not fatal */
+      })
+    }
   }
   try {
     session.proc.kill()
@@ -192,12 +205,14 @@ function killSession(id: TermId): void {
 function killAllForContents(contentsId: number): void {
   const owned = byContents.get(contentsId)
   if (!owned) return
-  for (const id of [...owned]) killSession(id)
+  // Sync: closing the last window destroys its WebContents before `before-quit`, so this is the
+  // path that actually reaps terminals on a normal quit; the window is gone, so blocking is fine.
+  for (const id of [...owned]) killSession(id, { sync: true })
   byContents.delete(contentsId)
 }
 
 function killAll(): void {
-  for (const id of [...sessions.keys()]) killSession(id)
+  for (const id of [...sessions.keys()]) killSession(id, { sync: true })
 }
 
 /* ------------------------------------------------------------------ */
