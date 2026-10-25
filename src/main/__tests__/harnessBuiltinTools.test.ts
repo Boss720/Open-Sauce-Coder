@@ -263,6 +263,26 @@ describe('builtin tool: fs_read binary protection', () => {
     expect(result.error).toBeUndefined()
     expect(result.output).toBe(text)
   })
+
+  it('says so when a file is cut at the 2 MiB read cap', async () => {
+    const registry = registryWithBuiltins()
+    const cap = 2 * 1024 * 1024
+    writeFileSync(join(projectDir, 'big.txt'), 'a'.repeat(cap + 10), 'utf8')
+
+    const result = await registry.execute('fs_read', { path: 'big.txt' }, contextFor(projectDir))
+    expect(result.error).toBeUndefined()
+    expect(result.output.startsWith('a'.repeat(100))).toBe(true)
+    expect(result.output).toContain(`(truncated: showing the first ${cap} of ${cap + 10} bytes)`)
+  })
+
+  it('reads an empty file as empty text', async () => {
+    const registry = registryWithBuiltins()
+    writeFileSync(join(projectDir, 'empty.txt'), '', 'utf8')
+
+    const result = await registry.execute('fs_read', { path: 'empty.txt' }, contextFor(projectDir))
+    expect(result.error).toBeUndefined()
+    expect(result.output).toBe('')
+  })
 })
 
 describe('builtin tool: fs_patch', () => {

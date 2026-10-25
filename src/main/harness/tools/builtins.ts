@@ -14,6 +14,9 @@ type ExecError = Error & {
   stderr?: string | Buffer
 }
 
+/** Harness fs_read cap — longer files are cut here with a notice. */
+const MAX_READ_BYTES = 2 * 1024 * 1024
+
 /** Harness fs_write cap — matches the 2 MiB read bound above (fsService allows 8 MiB for the editor surface). */
 const MAX_WRITE_BYTES = 2 * 1024 * 1024
 
@@ -172,20 +175,23 @@ export function registerBuiltins(registry: ToolRegistry): void {
         const abs = assertSubpath(context.directory, path)
         const handle = await open(abs, 'r')
         try {
-          const chunk = Buffer.alloc(2 * 1024 * 1024)
+          const { size } = await handle.stat()
+          const chunk = Buffer.alloc(Math.min(size, MAX_READ_BYTES))
           const { bytesRead } = await handle.read(chunk, 0, chunk.length, 0)
 
           // Binary file detection: inspect first 8 KB for null bytes (\0)
           const checkLen = Math.min(bytesRead, 8192)
           for (let i = 0; i < checkLen; i++) {
             if (chunk[i] === 0) {
-              const fileStat = await handle.stat().catch(() => null)
-              const totalSize = fileStat ? fileStat.size : bytesRead
-              return { output: `[Binary file, size: ${totalSize} bytes]` }
+              return { output: `[Binary file, size: ${size} bytes]` }
             }
           }
 
-          return { output: chunk.toString('utf8', 0, bytesRead) }
+          const text = chunk.toString('utf8', 0, bytesRead)
+          if (size > bytesRead) {
+            return { output: `${text}\n... (truncated: showing the first ${bytesRead} of ${size} bytes)` }
+          }
+          return { output: text }
         } finally {
           await handle.close()
         }
