@@ -143,13 +143,19 @@ export function DagPanel({ compact = false }: DagPanelProps): JSX.Element {
         const rect = el.getBoundingClientRect()
         const mouseX = e.clientX - rect.left
         const mouseY = e.clientY - rect.top
-        setZoom(newZoom)
-        setPan({
+        const newPan = {
           x: mouseX - (mouseX - curPan.x) * (newZoom / curZoom),
           y: mouseY - (mouseY - curPan.y) * (newZoom / curZoom)
-        })
+        }
+        // Several wheel events can land before the next render (trackpad pinch);
+        // update the ref now so each one builds on the last instead of stale state.
+        viewRef.current = { pan: newPan, zoom: newZoom }
+        setZoom(newZoom)
+        setPan(newPan)
       } else {
-        setPan((prev) => ({ x: prev.x - e.deltaX, y: prev.y - e.deltaY }))
+        const newPan = { x: curPan.x - e.deltaX, y: curPan.y - e.deltaY }
+        viewRef.current = { pan: newPan, zoom: curZoom }
+        setPan(newPan)
       }
     }
     el.addEventListener('wheel', onWheel, { passive: false })
