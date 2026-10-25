@@ -9,7 +9,8 @@
  * - Thought signatures: `thoughtSignature` on response parts is captured while streaming and
  *   echoed verbatim, on the same parts and in the original order, when the assistant turn is
  *   replayed (Gemini 3 rejects a function-call turn without them with HTTP 400; Gemini 2.5
- *   loses reasoning quality). They travel in `providerReplay.gemini`.
+ *   loses reasoning quality). They travel in `providerReplay.gemini`. Gemini 3 turns that have
+ *   no signature to echo (other provider, gemini-2.5, no replay) get a documented dummy instead.
  * - `finishReason` is "STOP" even when function calls were returned, so tool calls win.
  * - Function calls frequently carry no `id`; unique ids are synthesised and responses are
  *   matched to calls by id -> function name.
@@ -42,6 +43,13 @@ import type {
 /** Prefix of tool-call ids this adapter invents when Gemini supplies none. Never sent back to Gemini. */
 const SYNTHETIC_ID_PREFIX = 'gemini-call-'
 
+/**
+ * Google's documented placeholder for function calls Gemini 3 did not sign itself (history from
+ * another provider or from gemini-2.5). Verified live 2026-10-25 on gemini-3.5-flash: a functionCall
+ * without a signature -> HTTP 400, with this value -> HTTP 200.
+ */
+const DUMMY_THOUGHT_SIGNATURE = 'skip_thought_signature_validator'
+
 function getApiKey(): string {
   const env = loadByokEnv()
   const key =
@@ -65,6 +73,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isSyntheticId(id: string): boolean {
   return id.startsWith(SYNTHETIC_ID_PREFIX)
+}
+
+function geminiModelId(model: string): string {
+  return model.toLowerCase().replace(/^models\//, '')
+}
+
+function isGemini3(model: string): boolean {
+  return geminiModelId(model).includes('gemini-3')
 }
 
 // ── Replay (thought signatures) ──
@@ -128,15 +144,31 @@ function replayToParts(replay: GeminiReplayPart[]): GeminiPart[] {
   return parts
 }
 
+/**
+ * Gemini 3 rejects a model turn whose function calls carry no signature. When none of the turn's
+ * calls is signed, put the dummy on the first call only (Gemini signs only the first of a parallel set).
+ */
+function withDummySignature(parts: GeminiPart[]): GeminiPart[] {
+  const first = parts.findIndex((p) => p.functionCall)
+  if (first === -1 || parts.some((p) => p.functionCall && p.thoughtSignature)) return parts
+  return parts.map((p, i) => (i === first ? { ...p, thoughtSignature: DUMMY_THOUGHT_SIGNATURE } : p))
+}
+
 // ── Message conversion ──
 
-/** Convert our ChatMessage[] to Gemini SDK Content[]. */
+/**
+ * Convert our ChatMessage[] to Gemini SDK Content[]. `model` only matters for Gemini 3, where
+ * unsigned function-call turns get a placeholder signature; without it nothing is added.
+ */
 export function toGeminiContents(
   messages: ChatMessage[],
-  tools?: FunctionDefinition[]
+  tools?: FunctionDefinition[],
+  model?: string
 ): { systemInstruction?: string; contents: Content[] } {
   const systemSegments: string[] = []
   const contents: Content[] = []
+  const signCalls = (parts: GeminiPart[]): GeminiPart[] =>
+    model !== undefined && isGemini3(model) ? withDummySignature(parts) : parts
 
   const declaredToolNames = new Set<string>()
   if (tools) {
@@ -273,12 +305,12 @@ export function toGeminiContents(
           })
           const parts = replayToParts(replay)
           if (parts.length > 0) {
-            contents.push({ role, parts })
+            contents.push({ role, parts: signCalls(parts) })
             continue
           }
         }
 
-        // No (usable) replay: rebuild from the harness message. No signatures are available here.
+        // No (usable) replay: rebuild from the harness message. No real signatures are available here.
         turnCalls = new Map()
         const parts: GeminiPart[] = []
         if (typeof message.content === 'string' && message.content.length > 0) {
@@ -300,7 +332,7 @@ export function toGeminiContents(
             }
           })
         })
-        contents.push({ role, parts })
+        contents.push({ role, parts: signCalls(parts) })
         continue
       }
 
@@ -359,8 +391,8 @@ export function buildGeminiThinkingConfig(
   thinking: ChatRequest['thinking']
 ): Record<string, unknown> | undefined {
   if (!thinking?.enabled) return undefined
-  const id = model.toLowerCase().replace(/^models\//, '')
-  if (id.includes('gemini-3')) {
+  const id = geminiModelId(model)
+  if (isGemini3(model)) {
     return {
       includeThoughts: true,
       ...(thinking.budget !== undefined ? { thinkingLevel: thinking.budget <= 4096 ? 'LOW' : 'HIGH' } : {})
@@ -463,7 +495,7 @@ export class GeminiAdapter implements ProviderAdapter {
     const key = getApiKey()
     const client = new GoogleGenAI({ apiKey: key })
 
-    const { systemInstruction, contents } = toGeminiContents(request.messages, request.tools)
+    const { systemInstruction, contents } = toGeminiContents(request.messages, request.tools, request.model)
     const abort = new AbortController()
     if (request.signal) {
       if (request.signal.aborted) abort.abort()

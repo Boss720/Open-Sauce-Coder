@@ -207,6 +207,106 @@ describe('Gemini thought signatures', () => {
   })
 })
 
+describe('Gemini 3 placeholder signatures', () => {
+  const DUMMY = 'skip_thought_signature_validator'
+  const CALL_A = { name: 'fs_read', args: { path: 'a' } }
+  const CALL_B = { name: 'fs_read', args: { path: 'b' } }
+
+  /** A two-call parallel assistant turn plus its results, optionally carrying a stored replay. */
+  function parallelHistory(providerReplay?: ChatMessage['providerReplay']): ChatMessage[] {
+    return [
+      { role: 'user', content: 'read both' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          { id: 'gemini-call-h-0', type: 'function', function: { name: 'fs_read', arguments: '{"path":"a"}' } },
+          { id: 'gemini-call-h-1', type: 'function', function: { name: 'fs_read', arguments: '{"path":"b"}' } }
+        ],
+        ...(providerReplay ? { providerReplay } : {})
+      },
+      { role: 'tool', tool_call_id: 'gemini-call-h-0', content: 'A' },
+      { role: 'tool', tool_call_id: 'gemini-call-h-1', content: 'B' }
+    ]
+  }
+
+  function replayOf(...parts: Array<Record<string, unknown>>): ChatMessage['providerReplay'] {
+    return { gemini: { parts } }
+  }
+
+  /** Send `messages` through the adapter and return the parts of the model turn it put on the wire. */
+  async function modelTurnSent(model: string, messages: ChatMessage[]): Promise<Array<Record<string, unknown>>> {
+    queueStream([{ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'ok' }] } }] }])
+    await new GeminiAdapter().chat(baseRequest({ model, messages }))
+    return lastCall().contents[1].parts
+  }
+
+  it.each(['gemini-3-pro-preview', 'models/gemini-3.5-flash'])(
+    'puts the dummy on the first call only when %s gets history with no replay',
+    async (model) => {
+      const parts = await modelTurnSent(model, parallelHistory())
+      expect(parts).toEqual([
+        { functionCall: CALL_A, thoughtSignature: DUMMY },
+        { functionCall: CALL_B }
+      ])
+      expect(parts[1]).not.toHaveProperty('thoughtSignature')
+    }
+  )
+
+  it('keeps a real signature and never adds the dummy to a turn that already has one', async () => {
+    const onFirst = await modelTurnSent('gemini-3-pro-preview', parallelHistory(replayOf(
+      { functionCall: CALL_A, callId: 'gemini-call-h-0', thoughtSignature: 'SIG_REAL' },
+      { functionCall: CALL_B, callId: 'gemini-call-h-1' }
+    )))
+    expect(onFirst).toEqual([
+      { functionCall: CALL_A, thoughtSignature: 'SIG_REAL' },
+      { functionCall: CALL_B }
+    ])
+    expect(JSON.stringify(onFirst)).not.toContain(DUMMY)
+
+    // A signature on any call of the turn counts, wherever it sits.
+    const onSecond = await modelTurnSent('gemini-3-pro-preview', parallelHistory(replayOf(
+      { functionCall: CALL_A, callId: 'gemini-call-h-0' },
+      { functionCall: CALL_B, callId: 'gemini-call-h-1', thoughtSignature: 'SIG_REAL' }
+    )))
+    expect(onSecond).toEqual([
+      { functionCall: CALL_A },
+      { functionCall: CALL_B, thoughtSignature: 'SIG_REAL' }
+    ])
+    expect(JSON.stringify(onSecond)).not.toContain(DUMMY)
+  })
+
+  it('adds the dummy to the first call of a usable replay recorded without signatures', async () => {
+    const parts = await modelTurnSent('gemini-3-pro-preview', parallelHistory(replayOf(
+      { text: 'Reading. ' },
+      { functionCall: CALL_A, callId: 'gemini-call-h-0' },
+      { functionCall: CALL_B, callId: 'gemini-call-h-1' }
+    )))
+    expect(parts).toEqual([
+      { text: 'Reading. ' },
+      { functionCall: CALL_A, thoughtSignature: DUMMY },
+      { functionCall: CALL_B }
+    ])
+  })
+
+  it('does not add a signature for Gemini 2.5, with or without a replay, or when no model is given', async () => {
+    const unsignedReplay = replayOf(
+      { functionCall: CALL_A, callId: 'gemini-call-h-0' },
+      { functionCall: CALL_B, callId: 'gemini-call-h-1' }
+    )
+    const rebuilt = await modelTurnSent('gemini-2.5-flash', parallelHistory())
+    expect(rebuilt).toEqual([{ functionCall: CALL_A }, { functionCall: CALL_B }])
+    expect(JSON.stringify(rebuilt)).not.toContain('thoughtSignature')
+
+    const replayed = await modelTurnSent('gemini-2.5-pro', parallelHistory(unsignedReplay))
+    expect(replayed).toEqual([{ functionCall: CALL_A }, { functionCall: CALL_B }])
+    expect(JSON.stringify(replayed)).not.toContain('thoughtSignature')
+
+    const noModel = toGeminiContents(parallelHistory()).contents[1].parts
+    expect(JSON.stringify(noModel)).not.toContain('thoughtSignature')
+  })
+})
+
 describe('Gemini finish reasons and tool-call ids', () => {
   it('reports tool_calls when STOP arrives together with functionCall parts', async () => {
     queueStream([{
