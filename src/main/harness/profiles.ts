@@ -282,9 +282,9 @@ export const BUILTIN_PROFILES: readonly AgentProfile[] = Object.freeze([
   {
     id: 'claude-coder',
     name: 'Claude Coder',
-    description: 'Anthropic Claude 3.7 Sonnet with native tool use for precision software engineering and refactoring.',
+    description: 'Anthropic Claude Sonnet 5.5 with native tool use for precision software engineering and refactoring.',
     provider: 'anthropic',
-    model: 'claude-3-7-sonnet-20250219',
+    model: 'claude-sonnet-5-5',
     temperature: 0.2,
     maxTokens: 16384,
     thinking: { enabled: true, budget: 8192 },

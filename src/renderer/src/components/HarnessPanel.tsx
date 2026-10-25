@@ -23,14 +23,14 @@ const PROVIDER_OPTIONS = [
 
 /** Recommended model presets per provider for quick selection in profile editor. */
 const MODEL_PRESETS: Record<string, string[]> = {
-  opencode: ['default', 'claude-3-7-sonnet', 'gemini-2.5-pro'],
-  anthropic: ['claude-3-7-sonnet-latest', 'claude-3-5-haiku-latest'],
-  openai: ['gpt-4o', 'gpt-4o-mini', 'o3-mini'],
-  google: ['gemini-2.5-pro', 'gemini-2.5-flash'],
+  opencode: ['default', 'claude-sonnet-5-5', 'gemini-2.5-pro'],
+  anthropic: ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5', 'claude-fable-5-1'],
+  openai: ['gpt-5.5', 'gpt-5.4-mini', 'gpt-4o', 'o3-mini'],
+  google: ['gemini-3.1-pro-preview', 'gemini-3.5-flash', 'gemini-2.5-pro', 'gemini-2.5-flash'],
   deepseek: ['deepseek-chat', 'deepseek-reasoner'],
-  groq: ['llama-3.3-70b-versatile', 'mixtral-8x7b-32768'],
-  nanogpt: ['openai/gpt-4o', 'anthropic/claude-3.5-sonnet'],
-  openrouter: ['anthropic/claude-3.7-sonnet', 'deepseek/deepseek-r1'],
+  groq: ['llama-3.3-70b-versatile', 'openai/gpt-oss-120b'],
+  nanogpt: ['openai/gpt-4o', 'anthropic/claude-sonnet-5.5'],
+  openrouter: ['anthropic/claude-sonnet-5.5', 'openai/gpt-5.5', 'google/gemini-3.5-flash', 'deepseek/deepseek-v4-pro'],
   mistral: ['mistral-large-latest', 'codestral-latest'],
   xai: ['grok-2-latest'],
   cerebras: ['llama3.3-70b'],
@@ -572,7 +572,7 @@ export function HarnessPanel({ compact = false }: { compact?: boolean }): JSX.El
                     type="text"
                     value={draft.model}
                     disabled={draftLocked}
-                    placeholder="e.g. gpt-4o, claude-3-7-sonnet-latest, gemini-2.5-pro"
+                    placeholder="e.g. gpt-4o, claude-sonnet-5-5, gemini-2.5-pro"
                     onChange={(e) => patchDraft({ model: e.target.value })}
                   />
                   {MODEL_PRESETS[draft.provider] && MODEL_PRESETS[draft.provider].length > 0 && (
