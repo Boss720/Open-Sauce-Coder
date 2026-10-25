@@ -40,6 +40,8 @@ const ECHO_REASONING_PROVIDERS = new Set(['deepseek', 'moonshot'])
 export type OpenAiCompatibleConfig = {
   providerId: string
   baseUrl: string
+  /** Other official API base URLs of this provider; their origins may also receive its key. */
+  officialBaseUrls?: string[]
   chatPath?: string
   probePath?: string
   defaultHeaders?: Record<string, string>
@@ -77,6 +79,7 @@ export const OPENAI_COMPATIBLE_CONFIGS: Record<string, OpenAiCompatibleConfig> =
   moonshot: {
     providerId: 'moonshot',
     baseUrl: 'https://api.moonshot.cn/v1',
+    officialBaseUrls: ['https://api.moonshot.ai/v1'],
     chatPath: '/chat/completions',
     probePath: '/models'
   },
@@ -153,7 +156,7 @@ export function isLoopbackUrl(raw: string): boolean {
   )
 }
 
-function sameOrigin(a: string, b: string): boolean {
+export function sameOrigin(a: string, b: string): boolean {
   try {
     return new URL(a.trim()).origin === new URL(b.trim()).origin
   } catch {
@@ -569,8 +572,9 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
   /**
    * Resolve the credential for one request (never cached). Returns null when none is needed:
    * - `custom` endpoints use the optional CUSTOM_API_KEY;
-   * - a built-in provider pointed at a different origin gets no key (its key is never
-   *   forwarded to a host it was not issued for), which also covers loopback servers.
+   * - a built-in provider pointed at an origin other than its own API hosts (`baseUrl` and
+   *   `officialBaseUrls`) gets no key (its key is never forwarded to a host it was not issued
+   *   for), which also covers loopback servers.
    * A built-in provider talking to its own API without a key is a configuration error.
    */
   private resolveKey(baseUrl: string): string | null {
@@ -581,7 +585,8 @@ export class OpenAiCompatibleAdapter implements ProviderAdapter {
 
     const entry = catalogByProvider(this.id)
     if (!entry) throw new Error(`Unknown provider catalog entry for: ${this.id}`)
-    if (!sameOrigin(baseUrl, this.config.baseUrl)) return null
+    const official = [this.config.baseUrl, ...(this.config.officialBaseUrls ?? [])]
+    if (!official.some((url) => sameOrigin(baseUrl, url))) return null
     const env = loadByokEnv()
     const key = env[entry.envVar] ?? process.env[entry.envVar]
     if (!key) {

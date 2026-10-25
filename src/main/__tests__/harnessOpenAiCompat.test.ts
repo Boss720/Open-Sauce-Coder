@@ -468,6 +468,36 @@ describe('baseUrl handling', () => {
     expect(headerOf(calls[0], 'Authorization')).toBe('Bearer gsk-real-1')
   })
 
+  it.each(['https://api.moonshot.cn/v1', 'https://api.moonshot.ai/v1', 'https://api.moonshot.ai/v1/'])(
+    'moonshot sends its key to the official host %s',
+    async (baseUrl) => {
+      const calls = stubFetch(() => sse([delta({ content: 'x' }, 'stop'), '[DONE]']))
+      await adapterFor('moonshot').chat(req({ baseUrl }))
+      expect(headerOf(calls[0], 'Authorization')).toBe(`Bearer ${DEFAULT_ENV.MOONSHOT_API_KEY}`)
+    }
+  )
+
+  it.each([
+    'https://api.moonshot.ai.evil.example/v1',
+    'https://api.moonshot.ai@evil.example/v1',
+    'http://api.moonshot.ai/v1',
+    'https://evil.example/v1'
+  ])('moonshot sends no key to %s', async (baseUrl) => {
+    const calls = stubFetch(() => sse([delta({ content: 'x' }, 'stop'), '[DONE]']))
+    await adapterFor('moonshot').chat(req({ baseUrl }))
+    expect(headerOf(calls[0], 'Authorization')).toBeUndefined()
+  })
+
+  it('moonshot on its international host without a key is a configuration error, not a keyless call', async () => {
+    vi.stubEnv('MOONSHOT_API_KEY', '')
+    vi.mocked(loadByokEnv).mockReturnValue({})
+    const calls = stubFetch(() => sse([delta({ content: 'x' }, 'stop'), '[DONE]']))
+    await expect(adapterFor('moonshot').chat(req({ baseUrl: 'https://api.moonshot.ai/v1' }))).rejects.toThrow(
+      /No API key configured for/
+    )
+    expect(calls).toHaveLength(0)
+  })
+
   it('probe() works for a keyless loopback custom endpoint', async () => {
     vi.stubEnv('CUSTOM_API_KEY', '')
     vi.mocked(loadByokEnv).mockReturnValue({})

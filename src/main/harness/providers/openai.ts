@@ -10,6 +10,7 @@
  * routed through `safeError` before leaving this module.
  */
 import { loadByokEnv } from '../../keys'
+import { sameOrigin } from './openaiCompatible'
 import type {
   ProviderAdapter,
   ChatRequest,
@@ -33,6 +34,14 @@ function getApiKey(): string {
   const key = env.OPENAI_API_KEY ?? process.env.OPENAI_API_KEY
   if (!key) throw new Error('No OpenAI API key is configured. Add OpenAI under Providers first.')
   return key
+}
+
+/**
+ * Credential for one request. OpenAI's key is never forwarded to a host it was not issued
+ * for: a base URL on another origin (proxy, local server) is sent no key and needs none.
+ */
+function resolveKey(baseUrl: string): string | null {
+  return sameOrigin(baseUrl, OPENAI_BASE_URL) ? getApiKey() : null
 }
 
 function safeError(error: unknown): string {
@@ -196,8 +205,8 @@ export class OpenAiAdapter implements ProviderAdapter {
   }
 
   async chat(request: ChatRequest, onDelta?: (delta: ChatDelta) => void): Promise<ChatResponse> {
-    const key = getApiKey()
-    const baseUrl = (request.baseUrl ?? OPENAI_BASE_URL).replace(/\/+$/, '')
+    const baseUrl = (request.baseUrl?.trim() || OPENAI_BASE_URL).replace(/\/+$/, '')
+    const key = resolveKey(baseUrl)
     const url = `${baseUrl}/chat/completions`
 
     const reasoning = isOpenAiReasoningModel(request.model)
@@ -270,7 +279,7 @@ export class OpenAiAdapter implements ProviderAdapter {
 
   private async executeStream(
     url: string,
-    key: string,
+    key: string | null,
     body: Record<string, unknown>,
     requestId: string,
     abort: AbortController,
@@ -293,7 +302,7 @@ export class OpenAiAdapter implements ProviderAdapter {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${key}`
+            ...(key ? { Authorization: `Bearer ${key}` } : {})
           },
           body: JSON.stringify(body),
           signal: watchdog.signal

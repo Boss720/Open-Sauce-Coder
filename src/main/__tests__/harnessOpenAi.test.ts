@@ -93,6 +93,14 @@ function bodyOf(fn: ReturnType<typeof stubFetch>, call = 0): SentBody {
   return JSON.parse(String(fn.mock.calls[call][1]?.body)) as SentBody
 }
 
+function headersOf(fn: ReturnType<typeof stubFetch>, call = 0): Record<string, string> {
+  return fn.mock.calls[call][1]?.headers as Record<string, string>
+}
+
+function authHeaderOf(fn: ReturnType<typeof stubFetch>, call = 0): string | undefined {
+  return headersOf(fn, call).Authorization
+}
+
 function request(overrides: Partial<ChatRequest> = {}): ChatRequest {
   return {
     requestId: 'run-1-turn-1',
@@ -200,8 +208,13 @@ describe('OpenAiAdapter request body', () => {
     await new OpenAiAdapter().chat(request({ tools, baseUrl: 'http://localhost:1234/v1/' }))
     expect(fetchFn.mock.calls[0][0]).toBe('http://localhost:1234/v1/chat/completions')
     expect(bodyOf(fetchFn).tools).toEqual(tools)
-    const headers = fetchFn.mock.calls[0][1]?.headers as Record<string, string>
-    expect(headers.Authorization).toBe(`Bearer ${TEST_KEY}`)
+  })
+
+  it('sends the key as a bearer token on the default base URL', async () => {
+    const fetchFn = stubFetch(() => streamResponse(simpleAnswer()))
+    await new OpenAiAdapter().chat(request())
+    expect(fetchFn.mock.calls[0][0]).toBe('https://api.openai.com/v1/chat/completions')
+    expect(authHeaderOf(fetchFn)).toBe(`Bearer ${TEST_KEY}`)
   })
 
   it('resolves the API key per request', async () => {
@@ -212,6 +225,78 @@ describe('OpenAiAdapter request body', () => {
     await adapter.chat(request())
     expect((fetchFn.mock.calls[0][1]?.headers as Record<string, string>).Authorization).toBe('Bearer sk-openai-rotated')
     expect((fetchFn.mock.calls[1][1]?.headers as Record<string, string>).Authorization).toBe(`Bearer ${TEST_KEY}`)
+  })
+})
+
+describe('OpenAiAdapter credential scoping', () => {
+  // The stored key is only ever sent to OpenAI's own origin, never to a host it was not issued for.
+  const withoutStoredKey = (): void => {
+    vi.mocked(loadByokEnv).mockReturnValue({})
+    vi.stubEnv('OPENAI_API_KEY', '')
+  }
+
+  afterEach(() => {
+    vi.mocked(loadByokEnv).mockReturnValue({ OPENAI_API_KEY: TEST_KEY })
+    vi.unstubAllEnvs()
+  })
+
+  it.each([
+    ['the default base URL', undefined, 'https://api.openai.com/v1/chat/completions'],
+    ['a blank base URL', '  ', 'https://api.openai.com/v1/chat/completions'],
+    ['the same origin with a trailing slash', 'https://api.openai.com/v1/', 'https://api.openai.com/v1/chat/completions']
+  ])('sends the key on %s', async (_label, baseUrl, expectedUrl) => {
+    const fetchFn = stubFetch(() => streamResponse(simpleAnswer()))
+    await new OpenAiAdapter().chat(request({ baseUrl }))
+    expect(fetchFn.mock.calls[0][0]).toBe(expectedUrl)
+    expect(authHeaderOf(fetchFn)).toBe(`Bearer ${TEST_KEY}`)
+  })
+
+  it.each([
+    'https://evil.example/v1',
+    'https://api.openai.com.evil.example/v1',
+    'https://api.openai.com@evil.example/v1',
+    'http://api.openai.com/v1',
+    'http://localhost:1234/v1'
+  ])('sends no credential header to %s even though a key is stored', async (baseUrl) => {
+    const fetchFn = stubFetch(() => streamResponse(simpleAnswer()))
+    await new OpenAiAdapter().chat(request({ baseUrl }))
+    expect(fetchFn.mock.calls[0][0]).toBe(`${baseUrl}/chat/completions`)
+    expect('Authorization' in headersOf(fetchFn)).toBe(false)
+    expect(JSON.stringify(fetchFn.mock.calls[0][1])).not.toContain(TEST_KEY)
+  })
+
+  it.each(['https://evil.example/v1', 'http://localhost:1234/v1'])(
+    'needs no key for %s and does not throw when none is stored',
+    async (baseUrl) => {
+      withoutStoredKey()
+      const fetchFn = stubFetch(() => streamResponse(simpleAnswer()))
+      const response = await new OpenAiAdapter().chat(request({ baseUrl }))
+      expect(response.content).toBe('ok')
+      expect('Authorization' in headersOf(fetchFn)).toBe(false)
+    }
+  )
+
+  it.each([undefined, 'https://api.openai.com/v1/'])(
+    'still requires a key on its own origin (%s)',
+    async (baseUrl) => {
+      withoutStoredKey()
+      const fetchFn = stubFetch(() => streamResponse(simpleAnswer()))
+      await expect(new OpenAiAdapter().chat(request({ baseUrl }))).rejects.toThrow(
+        'No OpenAI API key is configured. Add OpenAI under Providers first.'
+      )
+      expect(fetchFn).not.toHaveBeenCalled()
+    }
+  )
+
+  it('still redacts the stored key from errors of a request that sent no credential', async () => {
+    stubFetch(
+      () => new Response(JSON.stringify({ error: { message: `echoed ${TEST_KEY} back` } }), { status: 400 })
+    )
+    const promise = new OpenAiAdapter().chat(request({ baseUrl: 'https://evil.example/v1' }))
+    await expect(promise).rejects.toThrow('[redacted]')
+    await promise.catch((error: Error) => {
+      expect(error.message).not.toContain(TEST_KEY)
+    })
   })
 })
 

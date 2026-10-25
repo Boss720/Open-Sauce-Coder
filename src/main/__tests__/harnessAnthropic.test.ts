@@ -294,12 +294,21 @@ describe('AnthropicAdapter request body', () => {
     expect('tool_choice' in body).toBe(false)
   })
 
-  it('sends the required headers and honours a baseUrl override', async () => {
+  it('sends the required headers, including the key, on the default base URL', async () => {
+    const fetchFn = stubFetch(() => streamResponse(simpleAnswer()))
+    await new AnthropicAdapter().chat(request())
+    expect(fetchFn.mock.calls[0][0]).toBe('https://api.anthropic.com/v1/messages')
+    const headers = headersOf(fetchFn)
+    expect(headers['x-api-key']).toBe(TEST_KEY)
+    expect(headers['anthropic-version']).toBe('2023-06-01')
+    expect(headers['content-type']).toBe('application/json')
+  })
+
+  it('honours a baseUrl override without a double slash', async () => {
     const fetchFn = stubFetch(() => streamResponse(simpleAnswer()))
     await new AnthropicAdapter().chat(request({ baseUrl: 'http://127.0.0.1:9999/v1/' }))
     expect(fetchFn.mock.calls[0][0]).toBe('http://127.0.0.1:9999/v1/messages')
     const headers = headersOf(fetchFn)
-    expect(headers['x-api-key']).toBe(TEST_KEY)
     expect(headers['anthropic-version']).toBe('2023-06-01')
     expect(headers['content-type']).toBe('application/json')
   })
@@ -332,6 +341,78 @@ describe('AnthropicAdapter request body', () => {
       if (saved !== undefined) process.env.ANTHROPIC_API_KEY = saved
     }
     expect(fetchFn).not.toHaveBeenCalled()
+  })
+})
+
+describe('AnthropicAdapter credential scoping', () => {
+  // The stored key is only ever sent to Anthropic's own origin, never to a host it was not issued for.
+  const withoutStoredKey = (): void => {
+    vi.mocked(loadByokEnv).mockReturnValue({})
+    vi.stubEnv('ANTHROPIC_API_KEY', '')
+  }
+
+  afterEach(() => {
+    vi.mocked(loadByokEnv).mockReturnValue({ ANTHROPIC_API_KEY: TEST_KEY })
+    vi.unstubAllEnvs()
+  })
+
+  it.each([
+    ['the default base URL', undefined, 'https://api.anthropic.com/v1/messages'],
+    ['a blank base URL', '  ', 'https://api.anthropic.com/v1/messages'],
+    ['the same origin with a trailing slash', 'https://api.anthropic.com/v1/', 'https://api.anthropic.com/v1/messages']
+  ])('sends the key on %s', async (_label, baseUrl, expectedUrl) => {
+    const fetchFn = stubFetch(() => streamResponse(simpleAnswer()))
+    await new AnthropicAdapter().chat(request({ baseUrl }))
+    expect(fetchFn.mock.calls[0][0]).toBe(expectedUrl)
+    expect(headersOf(fetchFn)['x-api-key']).toBe(TEST_KEY)
+  })
+
+  it.each([
+    'https://evil.example/v1',
+    'https://api.anthropic.com.evil.example/v1',
+    'https://api.anthropic.com@evil.example/v1',
+    'http://api.anthropic.com/v1',
+    'http://127.0.0.1:9999/v1'
+  ])('sends no credential header to %s even though a key is stored', async (baseUrl) => {
+    const fetchFn = stubFetch(() => streamResponse(simpleAnswer()))
+    await new AnthropicAdapter().chat(request({ baseUrl }))
+    expect(fetchFn.mock.calls[0][0]).toBe(`${baseUrl}/messages`)
+    const headers = headersOf(fetchFn)
+    expect('x-api-key' in headers).toBe(false)
+    expect(JSON.stringify(fetchFn.mock.calls[0][1])).not.toContain(TEST_KEY)
+    expect(headers['anthropic-version']).toBe('2023-06-01')
+  })
+
+  it.each(['https://evil.example/v1', 'http://127.0.0.1:9999/v1'])(
+    'needs no key for %s and does not throw when none is stored',
+    async (baseUrl) => {
+      withoutStoredKey()
+      const fetchFn = stubFetch(() => streamResponse(simpleAnswer()))
+      const response = await new AnthropicAdapter().chat(request({ baseUrl }))
+      expect(response.content).toBe('ok')
+      expect('x-api-key' in headersOf(fetchFn)).toBe(false)
+    }
+  )
+
+  it.each([undefined, 'https://api.anthropic.com/v1/'])(
+    'still requires a key on its own origin (%s)',
+    async (baseUrl) => {
+      withoutStoredKey()
+      const fetchFn = stubFetch(() => streamResponse(simpleAnswer()))
+      await expect(new AnthropicAdapter().chat(request({ baseUrl }))).rejects.toThrow(
+        'No Anthropic API key is configured. Add Anthropic under Providers first.'
+      )
+      expect(fetchFn).not.toHaveBeenCalled()
+    }
+  )
+
+  it('still redacts the stored key from errors of a request that sent no credential', async () => {
+    stubFetch(() => errorResponse(400, 'invalid_request_error', `echoed ${TEST_KEY} back`))
+    const promise = new AnthropicAdapter().chat(request({ baseUrl: 'https://evil.example/v1' }))
+    await expect(promise).rejects.toThrow('[redacted]')
+    await promise.catch((error: Error) => {
+      expect(error.message).not.toContain(TEST_KEY)
+    })
   })
 })
 

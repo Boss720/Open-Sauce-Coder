@@ -10,6 +10,7 @@
  * routed through `safeError` before leaving this module.
  */
 import { loadByokEnv } from '../../keys'
+import { sameOrigin } from './openaiCompatible'
 import type {
   ProviderAdapter,
   ChatRequest,
@@ -46,6 +47,14 @@ function getApiKey(): string {
   const key = env.ANTHROPIC_API_KEY ?? process.env.ANTHROPIC_API_KEY
   if (!key) throw new Error('No Anthropic API key is configured. Add Anthropic under Providers first.')
   return key
+}
+
+/**
+ * Credential for one request. Anthropic's key is never forwarded to a host it was not issued
+ * for: a base URL on another origin (proxy, local server) is sent no key and needs none.
+ */
+function resolveKey(baseUrl: string): string | null {
+  return sameOrigin(baseUrl, ANTHROPIC_BASE_URL) ? getApiKey() : null
 }
 
 function safeError(error: unknown): string {
@@ -443,8 +452,9 @@ export class AnthropicAdapter implements ProviderAdapter {
   }
 
   async chat(request: ChatRequest, onDelta?: (delta: ChatDelta) => void): Promise<ChatResponse> {
-    const key = getApiKey()
-    const url = `${(request.baseUrl ?? ANTHROPIC_BASE_URL).replace(/\/+$/, '')}/messages`
+    const baseUrl = (request.baseUrl?.trim() || ANTHROPIC_BASE_URL).replace(/\/+$/, '')
+    const key = resolveKey(baseUrl)
+    const url = `${baseUrl}/messages`
     const body = buildBody(request)
 
     const abort = new AbortController()
@@ -495,7 +505,7 @@ export class AnthropicAdapter implements ProviderAdapter {
   /** Retries retryable failures (at most MAX_RETRIES) as long as no delta reached the caller and the request is live. */
   private async executeWithRetry(
     url: string,
-    key: string,
+    key: string | null,
     body: Record<string, unknown>,
     requestId: string,
     abort: AbortController,
@@ -523,7 +533,7 @@ export class AnthropicAdapter implements ProviderAdapter {
 
   private async executeStream(
     url: string,
-    key: string,
+    key: string | null,
     body: Record<string, unknown>,
     requestId: string,
     abort: AbortController,
@@ -545,7 +555,7 @@ export class AnthropicAdapter implements ProviderAdapter {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
-            'x-api-key': key,
+            ...(key ? { 'x-api-key': key } : {}),
             'anthropic-version': ANTHROPIC_VERSION
           },
           body: JSON.stringify(body),
